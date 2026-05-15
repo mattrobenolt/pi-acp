@@ -340,33 +340,8 @@ export class PiAcpSession {
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
       const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject };
 
-      // If a turn is already running, enqueue.
       if (this.pendingTurn) {
-        this.turnQueue.push(queued);
-        debugLog("session.prompt.queued", {
-          sessionId: this.sessionId,
-          queueDepth: this.turnQueue.length,
-          inAgentLoop: this.inAgentLoop,
-          message: expandedMessage,
-        });
-
-        // Best-effort: notify client that a prompt was queued.
-        // This doesn't work in Zed yet, needs to be revisited
-        this.emit({
-          sessionUpdate: "agent_message_chunk",
-          content: {
-            type: "text",
-            text: `Queued message (position ${this.turnQueue.length}).`,
-          },
-        });
-
-        // Also publish queue depth via session info metadata.
-        // This also not visible in the client
-        this.emit({
-          sessionUpdate: "session_info_update",
-          _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } },
-        });
-
+        this.sendStreamingPrompt(queued, "steer");
         return;
       }
 
@@ -442,6 +417,19 @@ export class PiAcpSession {
 
   private async flushEmits(): Promise<void> {
     await this.lastEmit;
+  }
+
+  private sendStreamingPrompt(t: QueuedTurn, streamingBehavior: "steer" | "followUp"): void {
+    debugLog("session.streaming_prompt.call", {
+      sessionId: this.sessionId,
+      message: t.message,
+      streamingBehavior,
+    });
+
+    this.proc
+      .prompt(t.message, t.images, { streamingBehavior })
+      .then(() => t.resolve("end_turn"))
+      .catch((err) => t.reject(maybeAuthRequiredError(err) ?? err));
   }
 
   private startTurn(t: QueuedTurn): void {

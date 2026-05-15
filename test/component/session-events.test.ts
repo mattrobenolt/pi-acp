@@ -549,7 +549,7 @@ test("PiAcpSession: cancel flips stopReason to cancelled", async () => {
   assert.equal(reason, "cancelled");
 });
 
-test("PiAcpSession: queues concurrent prompt and starts it after agent_end", async () => {
+test("PiAcpSession: sends concurrent prompt as steering", async () => {
   const conn = new FakeAgentSideConnection();
   const proc = new FakePiRpcProcess();
 
@@ -565,8 +565,13 @@ test("PiAcpSession: queues concurrent prompt and starts it after agent_end", asy
   const first = session.prompt("one");
   const second = session.prompt("two");
 
-  assert.equal(proc.prompts.length, 1);
+  assert.equal(proc.prompts.length, 2);
   assert.equal(proc.prompts[0]!.message, "one");
+  assert.equal(proc.prompts[1]!.message, "two");
+  assert.deepEqual(proc.prompts[1]!.opts, { streamingBehavior: "steer" });
+
+  const r2 = await second;
+  assert.equal(r2, "end_turn");
 
   proc.emit({ type: "agent_start" });
   proc.emit({ type: "turn_end" });
@@ -574,19 +579,9 @@ test("PiAcpSession: queues concurrent prompt and starts it after agent_end", asy
 
   const r1 = await first;
   assert.equal(r1, "end_turn");
-
-  assert.equal(proc.prompts.length, 2);
-  assert.equal(proc.prompts[1]!.message, "two");
-
-  proc.emit({ type: "agent_start" });
-  proc.emit({ type: "turn_end" });
-  proc.emit({ type: "agent_end" });
-
-  const r2 = await second;
-  assert.equal(r2, "end_turn");
 });
 
-test("PiAcpSession: cancel clears queued prompts", async () => {
+test("PiAcpSession: cancel aborts current prompt without cancelling steering prompts", async () => {
   const conn = new FakeAgentSideConnection();
   const proc = new FakePiRpcProcess();
 
@@ -602,7 +597,8 @@ test("PiAcpSession: cancel clears queued prompts", async () => {
   const first = session.prompt("one");
   const second = session.prompt("two");
 
-  assert.equal(proc.prompts.length, 1);
+  assert.equal(proc.prompts.length, 2);
+  assert.deepEqual(proc.prompts[1]!.opts, { streamingBehavior: "steer" });
 
   await session.cancel();
   proc.emit({ type: "agent_start" });
@@ -613,7 +609,7 @@ test("PiAcpSession: cancel clears queued prompts", async () => {
   const r2 = await second;
 
   assert.equal(r1, "cancelled");
-  assert.equal(r2, "cancelled");
+  assert.equal(r2, "end_turn");
 });
 
 test("PiAcpSession: expands /command before sending to pi", async () => {
