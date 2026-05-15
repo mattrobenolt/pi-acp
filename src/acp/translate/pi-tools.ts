@@ -1,6 +1,30 @@
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk";
 
+export function toToolTitle(toolName: string, args: unknown): string {
+  const a = args as Record<string, unknown> | null | undefined;
+  switch (toolName) {
+    case "bash": {
+      const command = typeof a?.command === "string" ? a.command : undefined;
+      return command ? `bash: ${command}` : "bash";
+    }
+    case "read": {
+      const path = typeof a?.path === "string" ? a.path : undefined;
+      return path ? `read: ${path}` : "read";
+    }
+    case "write": {
+      const path = typeof a?.path === "string" ? a.path : undefined;
+      return path ? `write: ${path}` : "write";
+    }
+    case "edit": {
+      const path = typeof a?.path === "string" ? a.path : undefined;
+      return path ? `edit: ${path}` : "edit";
+    }
+    default:
+      return toolName;
+  }
+}
+
 export function toToolKind(toolName: string): ToolKind {
   switch (toolName) {
     case "read":

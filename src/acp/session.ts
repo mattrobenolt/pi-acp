@@ -21,6 +21,7 @@ import { SessionStore } from "./session-store.js";
 import {
   toolResultToText,
   toToolKind,
+  toToolTitle,
   toToolCallLocations as sharedToToolCallLocations,
 } from "./translate/pi-tools.js";
 import { expandSlashCommand, type FileSlashCommand } from "./slash-commands.js";
@@ -494,8 +495,12 @@ export class PiAcpSession {
           pendingTurn: Boolean(this.pendingTurn),
           inAgentLoop: this.inAgentLoop,
         });
-
-        if (!this.inAgentLoop && this.pendingTurn) {
+        // The RPC response only means pi accepted the prompt. Turn completion is signaled by
+        // `agent_end`; resolving here races with the event stream and makes clients think the
+        // turn is done immediately. Keep a short fallback for older/fake pi event streams that
+        // never emit agent_start/agent_end.
+        setTimeout(() => {
+          if (this.inAgentLoop || !this.pendingTurn) return;
           void this.flushEmits().finally(() => {
             this.pendingTurn?.resolve(this.cancelRequested ? "cancelled" : "end_turn");
             this.pendingTurn = null;
@@ -504,7 +509,7 @@ export class PiAcpSession {
               _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } },
             });
           });
-        }
+        }, 100);
       })
       .catch((err) => {
         debugLog("session.startTurn.proc_prompt.rejected", {
@@ -624,7 +629,7 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: "tool_call",
                 toolCallId,
-                title: toolName,
+                title: toToolTitle(toolName, rawInput),
                 kind: toToolKind(toolName),
                 status,
                 locations,
@@ -682,7 +687,7 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: "tool_call",
             toolCallId,
-            title: toolName,
+            title: toToolTitle(toolName, args),
             kind: toToolKind(toolName),
             status: "in_progress",
             locations,

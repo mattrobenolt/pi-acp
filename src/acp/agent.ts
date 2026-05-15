@@ -40,6 +40,7 @@ import { normalizePiAssistantText, normalizePiMessageText } from "./translate/pi
 import {
   toolResultToText,
   toToolKind,
+  toToolTitle,
   toToolCallLocations,
   buildArgsMap,
 } from "./translate/pi-tools.js";
@@ -1497,7 +1498,7 @@ export class PiAcpAgent implements ACPAgent {
           update: {
             sessionUpdate: "tool_call",
             toolCallId,
-            title: toolName,
+            title: toToolTitle(toolName, args),
             kind: toToolKind(toolName),
             status: "completed",
             rawInput: args ?? null,
