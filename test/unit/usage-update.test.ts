@@ -17,7 +17,8 @@ describe("buildUsageUpdate", () => {
 
   it("uses tokens.input as used when present", () => {
     const stats = { tokens: { input: 5000, output: 1000, total: 6000 } };
-    const result = buildUsageUpdate(stats, null);
+    const state = { model: { contextWindow: 200_000 } };
+    const result = buildUsageUpdate(stats, state);
     assert.ok(result !== null);
     assert.strictEqual(result.used, 5000);
     assert.strictEqual(result.sessionUpdate, "usage_update");
@@ -25,7 +26,8 @@ describe("buildUsageUpdate", () => {
 
   it("falls back to tokens.total when tokens.input is absent", () => {
     const stats = { tokens: { output: 1000, total: 6000 } };
-    const result = buildUsageUpdate(stats, null);
+    const state = { model: { contextWindow: 200_000 } };
+    const result = buildUsageUpdate(stats, state);
     assert.ok(result !== null);
     assert.strictEqual(result.used, 6000);
   });
@@ -40,40 +42,45 @@ describe("buildUsageUpdate", () => {
     assert.strictEqual(result.size, 200000);
   });
 
-  it("defaults size to 0 when state has no contextWindow", () => {
+  // contextWindow is required to produce a meaningful usage_update (clients need it for
+  // context-bar rendering). When it's absent or zero, we return null instead of emitting
+  // a bogus size:0 update.
+  it("returns null when state has no contextWindow", () => {
     const stats = { tokens: { input: 5000, total: 6000 } };
-    const result = buildUsageUpdate(stats, {});
-    assert.ok(result !== null);
-    assert.strictEqual(result.size, 0);
+    assert.strictEqual(buildUsageUpdate(stats, {}), null);
   });
 
-  it("defaults size to 0 when state is null", () => {
+  it("returns null when state is null (contextWindow unknown)", () => {
     const stats = { tokens: { input: 5000, total: 6000 } };
-    const result = buildUsageUpdate(stats, null);
-    assert.ok(result !== null);
-    assert.strictEqual(result.size, 0);
+    assert.strictEqual(buildUsageUpdate(stats, null), null);
+  });
+
+  it("returns null when contextWindow is 0", () => {
+    const stats = { tokens: { input: 5000, total: 6000 } };
+    assert.strictEqual(buildUsageUpdate(stats, { model: { contextWindow: 0 } }), null);
   });
 
   it("includes cost when present as a number", () => {
     const stats = { tokens: { input: 5000, total: 6000 }, cost: 0.05 };
-    const result = buildUsageUpdate(stats, null);
+    const state = { model: { contextWindow: 200_000 } };
+    const result = buildUsageUpdate(stats, state);
     assert.ok(result !== null);
     assert.deepEqual(result.cost, { amount: 0.05, currency: "USD" });
   });
 
   it("omits cost when not present", () => {
     const stats = { tokens: { input: 5000, total: 6000 } };
-    const result = buildUsageUpdate(stats, null);
+    const state = { model: { contextWindow: 200_000 } };
+    const result = buildUsageUpdate(stats, state);
     assert.ok(result !== null);
     assert.strictEqual(result.cost, undefined);
   });
 
-  it("omits cost when cost is zero (falsy but valid)", () => {
-    // cost of 0 is technically valid but treated as null by the != null check since 0 !== null
+  it("includes cost when cost is zero (falsy but valid number)", () => {
     const stats = { tokens: { input: 5000, total: 6000 }, cost: 0 };
-    const result = buildUsageUpdate(stats, null);
+    const state = { model: { contextWindow: 200_000 } };
+    const result = buildUsageUpdate(stats, state);
     assert.ok(result !== null);
-    // cost: 0 is a number so it gets included as { amount: 0, currency: "USD" }
     assert.deepEqual(result.cost, { amount: 0, currency: "USD" });
   });
 

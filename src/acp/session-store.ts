@@ -6,6 +6,7 @@ export type StoredSession = {
   sessionId: string;
   cwd: string;
   sessionFile: string;
+  additionalDirectories: string[];
   updatedAt: string;
 };
 
@@ -48,12 +49,29 @@ export class SessionStore {
     return db.sessions[sessionId] ?? null;
   }
 
-  upsert(entry: { sessionId: string; cwd: string; sessionFile: string }): void {
+  list(): StoredSession[] {
     const db = loadFile(this.path);
+    return Object.values(db.sessions).map((session) => ({
+      ...session,
+      additionalDirectories: Array.isArray(session.additionalDirectories)
+        ? session.additionalDirectories
+        : [],
+    }));
+  }
+
+  upsert(entry: {
+    sessionId: string;
+    cwd: string;
+    sessionFile: string;
+    additionalDirectories?: string[];
+  }): void {
+    const db = loadFile(this.path);
+    const previous = db.sessions[entry.sessionId];
     db.sessions[entry.sessionId] = {
       sessionId: entry.sessionId,
       cwd: entry.cwd,
       sessionFile: entry.sessionFile,
+      additionalDirectories: entry.additionalDirectories ?? previous?.additionalDirectories ?? [],
       updatedAt: new Date().toISOString(),
     };
     saveFile(this.path, db);

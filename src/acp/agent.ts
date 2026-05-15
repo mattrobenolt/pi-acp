@@ -1,9 +1,11 @@
 import {
   RequestError,
   type Agent as ACPAgent,
+  type AgentCapabilities,
   type AgentSideConnection,
   type AuthenticateRequest,
   type CancelNotification,
+  type ClientCapabilities,
   type CloseSessionRequest,
   type CloseSessionResponse,
   type InitializeRequest,
@@ -40,7 +42,7 @@ import {
   getQuietStartup,
 } from "./pi-settings.js";
 import { toAvailableCommandsFromPiGetCommands } from "./pi-commands.js";
-import { maybeAuthRequiredError } from "./auth-required.js";
+import { mapPiRpcError, maybeAuthRequiredError } from "./auth-required.js";
 import { isAbsolute } from "node:path";
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import type { AvailableCommand } from "@agentclientprotocol/sdk";
@@ -107,6 +109,36 @@ function mergeCommands(a: AvailableCommand[], b: AvailableCommand[]): AvailableC
 
   return out;
 }
+
+function normalizeAdditionalDirectories(
+  value: unknown,
+  opts: { optional?: boolean } = {},
+): string[] | null {
+  if (value === undefined || value === null) return opts.optional ? null : [];
+  if (!Array.isArray(value))
+    throw RequestError.invalidParams("additionalDirectories must be an array");
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw RequestError.invalidParams("additionalDirectories entries must be non-empty strings");
+    }
+    if (!isAbsolute(raw)) {
+      throw RequestError.invalidParams(
+        `additionalDirectories entries must be absolute paths: ${raw}`,
+      );
+    }
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
+  return out;
+}
+
+function sameStringArray(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
 import { fileURLToPath } from "node:url";
 
 const pkg = readNearestPackageJson(import.meta.url);
@@ -115,6 +147,12 @@ export class PiAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection;
   private readonly sessions = new SessionManager();
   private readonly store = new SessionStore();
+  private readonly sessionAdditionalDirectories = new Map<string, string[]>();
+
+  // Tracks whether the connected client declared support for usage_update via
+  // _meta["usage-update"] in InitializeRequest. Defaults to true (opt-out model):
+  // we send unless the client explicitly says it doesn't want it.
+  private clientSupportsUsageUpdate = true;
 
   dispose(): void {
     this.sessions.disposeAll();
@@ -153,10 +191,13 @@ export class PiAcpAgent implements ACPAgent {
     });
 
     this.lastSessionCwd = stored.cwd;
+    const additionalDirectories = stored.additionalDirectories ?? [];
+    this.sessionAdditionalDirectories.set(sessionId, additionalDirectories);
     this.store.upsert({
       sessionId,
       cwd: stored.cwd,
       sessionFile: stored.sessionFile,
+      ...(additionalDirectories.length ? { additionalDirectories } : {}),
     });
 
     return session;
@@ -172,6 +213,7 @@ export class PiAcpAgent implements ACPAgent {
     proc: PiRpcProcess,
     preState?: unknown,
   ): Promise<void> {
+    if (!this.clientSupportsUsageUpdate) return;
     try {
       const [stats, state] = await Promise.all([
         proc.getSessionStats(),
@@ -234,9 +276,17 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
+    // Gate usage_update on client opt-out via _meta["usage-update"].
+    // Default: send unless client explicitly sets _meta["usage-update"] = false.
+    const usageUpdateMeta = (params as any)?.clientCapabilities?._meta?.["usage-update"];
+    if (usageUpdateMeta === false) this.clientSupportsUsageUpdate = false;
+
     // We currently only support ACP protocol version 1.
     const supportedVersion = 1;
     const requested = params.protocolVersion;
+    const clientCaps = params.clientCapabilities;
+
+    const { agentCapabilities, debug } = negotiateCapabilities(clientCaps);
 
     return {
       protocolVersion: requested === supportedVersion ? requested : supportedVersion,
@@ -248,24 +298,10 @@ export class PiAcpAgent implements ACPAgent {
       // Zed currently uses ClientCapabilities._meta["terminal-auth"] to decide whether to show
       // the "Authenticate" banner/button. If not supported, we still return the method for the registry.
       authMethods: getAuthMethods({
-        supportsTerminalAuthMeta:
-          (params as any)?.clientCapabilities?._meta?.["terminal-auth"] === true,
+        supportsTerminalAuthMeta: clientCaps?._meta?.["terminal-auth"] === true,
       }),
-      agentCapabilities: {
-        loadSession: true,
-        mcpCapabilities: { http: false, sse: false },
-        promptCapabilities: {
-          image: true,
-          audio: false,
-          embeddedContext: process.env.PI_ACP_ENABLE_EMBEDDED_CONTEXT === "true",
-        },
-        sessionCapabilities: {
-          // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
-          // Enables a native session picker in clients that support it.
-          close: {},
-          list: {},
-        },
-      },
+      agentCapabilities,
+      _meta: { piAcp: debug },
     };
   }
 
@@ -278,6 +314,11 @@ export class PiAcpAgent implements ACPAgent {
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
     }
+
+    const additionalDirectories =
+      normalizeAdditionalDirectories(
+        (params as { additionalDirectories?: unknown }).additionalDirectories,
+      ) ?? [];
 
     this.lastSessionCwd = params.cwd;
 
@@ -371,6 +412,7 @@ export class PiAcpAgent implements ACPAgent {
         : ""
       : buildStartupInfo({
           cwd: params.cwd,
+          additionalDirectories,
           fileCommands,
           updateNotice,
         });
@@ -384,7 +426,22 @@ export class PiAcpAgent implements ACPAgent {
     // (Tests sometimes stub out `this.sessions`, so guard the call.)
     (this.sessions as any).closeAllExcept?.(session.sessionId);
 
-    const metadata = buildSessionMetadata({ state, models, sessionFile: state?.sessionFile });
+    this.sessionAdditionalDirectories.set(session.sessionId, additionalDirectories);
+    if (typeof state?.sessionFile === "string") {
+      this.store.upsert({
+        sessionId: session.sessionId,
+        cwd: params.cwd,
+        sessionFile: state.sessionFile,
+        additionalDirectories,
+      });
+    }
+
+    const metadata = buildSessionMetadata({
+      state,
+      models,
+      sessionFile: state?.sessionFile,
+      additionalDirectories,
+    });
 
     const response = {
       sessionId: session.sessionId,
@@ -987,6 +1044,7 @@ export class PiAcpAgent implements ACPAgent {
     await session.cancel();
     this.sessions.close(params.sessionId);
     this.titledSessions.delete(params.sessionId);
+    this.sessionAdditionalDirectories.delete(params.sessionId);
     return {};
   }
 
@@ -994,10 +1052,22 @@ export class PiAcpAgent implements ACPAgent {
     // ACP: filter by cwd if provided.
     // Zed currently sends `{}` (no cwd), so we default to the last session cwd to
     // emulate pi's `/resume` picker (project-scoped).
-    const all = listPiSessions();
+    const storedBySession = new Map(this.store.list().map((s) => [s.sessionId, s]));
+    const all = listPiSessions().map((session) => ({
+      ...session,
+      additionalDirectories: storedBySession.get(session.sessionId)?.additionalDirectories ?? [],
+    }));
 
     const effectiveCwd = (params as any).cwd ?? this.lastSessionCwd;
-    const filtered = effectiveCwd ? all.filter((s) => s.cwd === effectiveCwd) : all;
+    const requestedAdditionalDirectories = normalizeAdditionalDirectories(
+      (params as { additionalDirectories?: unknown }).additionalDirectories,
+      { optional: true },
+    );
+    const filtered = all.filter((s) => {
+      if (effectiveCwd && s.cwd !== effectiveCwd) return false;
+      if (requestedAdditionalDirectories === null) return true;
+      return sameStringArray(s.additionalDirectories, requestedAdditionalDirectories);
+    });
 
     // Cursor-based pagination (opaque cursor). For MVP, we use a simple numeric offset.
     // If cursor is invalid, treat as 0.
@@ -1012,6 +1082,7 @@ export class PiAcpAgent implements ACPAgent {
       cwd: s.cwd,
       title: s.title,
       updatedAt: s.updatedAt,
+      ...(s.additionalDirectories.length ? { additionalDirectories: s.additionalDirectories } : {}),
     }));
 
     const nextCursor = start + PAGE_SIZE < filtered.length ? String(start + PAGE_SIZE) : null;
@@ -1034,6 +1105,11 @@ export class PiAcpAgent implements ACPAgent {
     // pi subprocess so we can start fresh and re-advertise commands reliably.
     // (Some clients may call session/load when restoring from history.)
     this.sessions.close(params.sessionId);
+
+    const additionalDirectories =
+      normalizeAdditionalDirectories(
+        (params as { additionalDirectories?: unknown }).additionalDirectories,
+      ) ?? [];
 
     this.lastSessionCwd = params.cwd;
 
@@ -1090,10 +1166,12 @@ export class PiAcpAgent implements ACPAgent {
     (this.sessions as any).closeAllExcept?.(session.sessionId);
 
     // (Optional) ensure mapping stays fresh.
+    this.sessionAdditionalDirectories.set(params.sessionId, additionalDirectories);
     this.store.upsert({
       sessionId: params.sessionId,
       cwd: params.cwd,
       sessionFile,
+      additionalDirectories,
     });
 
     // Replay full conversation history.
@@ -1177,7 +1255,7 @@ export class PiAcpAgent implements ACPAgent {
     const models = await getModelState(proc, params.cwd);
     const thinking = await getThinkingState(proc);
 
-    const metadata = buildSessionMetadata({ models, sessionFile });
+    const metadata = buildSessionMetadata({ models, sessionFile, additionalDirectories });
 
     const response = {
       models,
@@ -1266,6 +1344,74 @@ export class PiAcpAgent implements ACPAgent {
     return response;
   }
 
+  async extMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!method.startsWith("pi-acp/")) {
+      throw RequestError.invalidParams(`Unsupported extension method: ${method}`);
+    }
+
+    const sessionId = typeof params.sessionId === "string" ? params.sessionId : null;
+    const session = sessionId ? await this.ensureSession(sessionId) : null;
+
+    if (method === "pi-acp/session") {
+      if (!session) throw RequestError.invalidParams("pi-acp/session requires sessionId");
+      const stored = this.store.get(session.sessionId);
+      return {
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        additionalDirectories: this.sessionAdditionalDirectories.get(session.sessionId) ?? [],
+        sessionFile: stored?.sessionFile ?? null,
+      };
+    }
+
+    if (method === "pi-acp/state") {
+      if (!session) throw RequestError.invalidParams("pi-acp/state requires sessionId");
+      try {
+        const state = (await session.proc.getState()) as Record<string, unknown>;
+        return { state };
+      } catch (err) {
+        throw mapPiRpcError(err, "Failed to fetch pi state");
+      }
+    }
+
+    if (method === "pi-acp/commands" || method === "pi-acp/reloadCommands") {
+      if (!session) throw RequestError.invalidParams(`${method} requires sessionId`);
+      try {
+        const pi = (await session.proc.getCommands()) as any;
+        const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
+          enableSkillCommands: getEnableSkillCommands(session.cwd),
+          includeExtensionCommands: getEnableExtensionCommands(session.cwd),
+        });
+        const availableCommands = mergeCommands(commands, builtinAvailableCommands());
+        if (method === "pi-acp/reloadCommands") {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: "available_commands_update",
+              availableCommands,
+            },
+          });
+        }
+        return {
+          source: "pi-rpc",
+          count: availableCommands.length,
+          availableCommands,
+        };
+      } catch (err) {
+        throw mapPiRpcError(err, "Failed to fetch pi commands");
+      }
+    }
+
+    throw RequestError.invalidParams(`Unsupported extension method: ${method}`);
+  }
+
+  async extNotification(method: string, params: Record<string, unknown>): Promise<void> {
+    if (method !== "pi-acp/reloadCommands") return;
+    await this.extMethod(method, params);
+  }
+
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
     const session = await this.ensureSession(params.sessionId);
 
@@ -1297,7 +1443,11 @@ export class PiAcpAgent implements ACPAgent {
       throw RequestError.invalidParams(`Unknown modelId: ${params.modelId}`);
     }
 
-    await session.proc.setModel(provider, modelId);
+    try {
+      await session.proc.setModel(provider, modelId);
+    } catch (err) {
+      throw mapPiRpcError(err, "Failed to set model");
+    }
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
@@ -1308,7 +1458,11 @@ export class PiAcpAgent implements ACPAgent {
       throw RequestError.invalidParams(`Unknown modeId: ${mode}`);
     }
 
-    await session.proc.setThinkingLevel(mode);
+    try {
+      await session.proc.setThinkingLevel(mode);
+    } catch (err) {
+      throw mapPiRpcError(err, "Failed to set thinking level");
+    }
 
     // Let the client know the current mode changed (keeps the dropdown in sync).
     void this.conn.sessionUpdate({
@@ -1321,6 +1475,65 @@ export class PiAcpAgent implements ACPAgent {
 
     return {};
   }
+}
+
+/**
+ * Negotiate agent capabilities based on what the client advertises.
+ *
+ * This is the single place where we decide what to advertise in `InitializeResponse`.
+ * We only claim capabilities this adapter actually implements. Features the client
+ * doesn't support (terminal, fs, NES, providers) are omitted even if the adapter
+ * had them, to keep the handshake honest.
+ */
+export function negotiateCapabilities(clientCaps: ClientCapabilities | undefined): {
+  agentCapabilities: AgentCapabilities;
+  debug: Record<string, unknown>;
+} {
+  const embeddedContext = process.env.PI_ACP_ENABLE_EMBEDDED_CONTEXT === "true";
+
+  // Capabilities we actually implement. Nothing is claimed here unless there is a
+  // real handler for it in this file.
+  //
+  // Intentionally NOT advertised (not implemented):
+  //   nes, providers, auth.logout, terminal (client-side), fs (client-side)
+  const agentCapabilities: AgentCapabilities = {
+    loadSession: true,
+    mcpCapabilities: { http: false, sse: false },
+    promptCapabilities: {
+      image: true,
+      audio: false,
+      embeddedContext,
+    },
+    sessionCapabilities: {
+      additionalDirectories: {},
+      // **UNSTABLE** ACP capabilities used by Zed's session picker.
+      // Both closeSession and unstable_listSessions are implemented.
+      close: {},
+      list: {},
+    },
+  };
+
+  // Summary of what the client told us it supports — handy for debugging handshake issues.
+  const debug: Record<string, unknown> = {
+    negotiated: {
+      loadSession: true,
+      additionalDirectories: true,
+      sessionClose: true,
+      sessionList: true,
+      image: true,
+      audio: false,
+      embeddedContext,
+    },
+    clientAdvertised: {
+      terminal: clientCaps?.terminal ?? false,
+      fs: !!clientCaps?.fs,
+      nes: !!clientCaps?.nes,
+      elicitation: !!clientCaps?.elicitation,
+      auth: !!clientCaps?.auth,
+    },
+  };
+
+  return { agentCapabilities, debug };
 }
 
 /**
@@ -1358,6 +1571,10 @@ export function buildUsageUpdate(
   const contextWindow =
     typeof model?.["contextWindow"] === "number" ? (model["contextWindow"] as number) : 0;
 
+  // Don't emit when the context window size is unknown (0). Clients that render a
+  // context-bar would show nonsense (0/0 or divide-by-zero) without a real limit.
+  if (contextWindow <= 0) return null;
+
   // Cost (optional). Pi reports cost as a plain number (USD).
   const rawCost = typeof s["cost"] === "number" ? (s["cost"] as number) : null;
   const cost = rawCost !== null ? { amount: rawCost, currency: "USD" } : null;
@@ -1376,6 +1593,7 @@ function buildSessionMetadata(opts: {
   state?: any | null;
   models?: { currentModelId?: string } | null;
   sessionFile?: string | null;
+  additionalDirectories?: string[];
 }): Record<string, unknown> {
   const model = opts.state?.model;
   const contextWindow = typeof model?.contextWindow === "number" ? model.contextWindow : undefined;
@@ -1386,6 +1604,9 @@ function buildSessionMetadata(opts: {
       model: opts.models?.currentModelId,
       contextWindow,
       sessionFile: opts.sessionFile || undefined,
+      additionalDirectories: opts.additionalDirectories?.length
+        ? opts.additionalDirectories
+        : undefined,
     }).filter(([, value]) => value !== undefined),
   );
 }
@@ -1616,6 +1837,7 @@ function buildUpdateNotice(): string | null {
 
 function buildStartupInfo(opts: {
   cwd: string;
+  additionalDirectories?: string[];
   fileCommands: ReturnType<typeof loadSlashCommands>;
   updateNotice: string | null;
 }): string {
@@ -1652,6 +1874,7 @@ function buildStartupInfo(opts: {
   const contextPath = join(opts.cwd, "AGENTS.md");
   if (existsSync(contextPath)) contextItems.push(contextPath);
   addSection("Context", contextItems);
+  addSection("Additional directories", opts.additionalDirectories ?? []);
 
   // Skills
   const skillsItems: string[] = [];

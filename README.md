@@ -22,9 +22,11 @@ Expect minor breaking changes. Zed is the primary target; other ACP clients may 
   - pi stores its own sessions under the configured pi session directory
   - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file
   - sessions get an initial title from the first prompt and can be closed from the ACP client
+  - ACP `additionalDirectories` are accepted on new/load/list, stored in adapter metadata, surfaced in session metadata/startup info, and used for exact-match session list filtering. pi still uses `cwd` as the execution base; these roots are context metadata, not a sandbox.
 - Zed-focused session metadata
-  - emits `session_info_update._meta.piAcp` with pi-acp version, model, context window, session file, queue state, and startup info
-  - emits best-effort ACP `usage_update` telemetry from pi session stats
+  - initializes with conservative capability negotiation and `_meta.piAcp` debug details for the ACP handshake
+  - emits `session_info_update._meta.piAcp` with pi-acp version, model, context window, session file, additional directories, queue state, and startup info
+  - emits best-effort ACP `usage_update` telemetry from pi session stats when the context window is known; clients can opt out with `clientCapabilities._meta["usage-update"] = false`
 - Slash commands
   - advertises pi RPC commands, file-based prompt commands, skill commands, and adapter built-ins to the ACP client
   - expands file-based prompt commands before sending to pi
@@ -33,6 +35,11 @@ Expect minor breaking changes. Zed is the primary target; other ACP clients may 
   - `select` and `confirm` requests are bridged to ACP `session/request_permission`
   - `notify` is surfaced as assistant text so notification-only extension commands work in Zed
   - fire-and-forget UI updates such as status/widget/title are ignored rather than wedging the turn
+- Diagnostics extension methods under the `pi-acp/*` namespace for custom ACP clients
+  - `pi-acp/session` returns adapter-side session metadata
+  - `pi-acp/state` returns live `pi --mode rpc` state
+  - `pi-acp/commands` returns the current advertised command catalog
+  - `pi-acp/reloadCommands` refreshes the ACP `available_commands_update` notification
 - Skills and pi packages are loaded by pi directly and are available in ACP sessions
 - Startup info mirrors pi's terminal prelude: pi version, context, skills, prompts, extensions, and configured packages. Disable it with `quietStartup: true` in pi settings (`~/.pi/agent/settings.json` or `<project>/.pi/settings.json`).
 - Session history is supported in Zed. Session loading/history maps to pi's session files, so sessions can be resumed both in `pi` and in the ACP client.
@@ -207,6 +214,7 @@ Project layout:
 ## Limitations
 
 - No ACP filesystem delegation (`fs/*`) and no ACP terminal delegation (`terminal/*`). pi reads/writes and executes locally.
+- ACP `additionalDirectories` are metadata only in the adapter. They are stored, advertised, and included in startup context, but pi still operates from the session `cwd`; they do not enforce filesystem scope.
 - MCP servers are accepted in ACP params and stored in session state, but not wired through to pi by this adapter. Configure MCP through pi itself if you need it in a pi session.
 - Extension UI support is partial. `notify`, `select`, and `confirm` are handled; richer TUI/editor/status/widget behavior is degraded.
 - pi commands are advertised from `get_commands`, but not every pi or extension command has a perfect ACP/Zed equivalent.
