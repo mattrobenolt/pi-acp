@@ -39,8 +39,9 @@
     "lint": "env -u NODE_PATH ./node_modules/.bin/oxlint . --deny-warnings",
     "check": "tsgo --noEmit",
     "typecheck": "tsgo --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts",
+    "test": "node --import tsx --test 'test/*.test.ts' 'test/**/*.test.ts'",
     "smoke": "node scripts/smoke-acp.mjs",
+    "smoke:eval": "node scripts/smoke-eval.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run test && npm run build"
   },

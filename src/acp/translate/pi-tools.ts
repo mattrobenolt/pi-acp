@@ -1,3 +1,58 @@
+import { isAbsolute, resolve as resolvePath } from "node:path";
+import type { ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk";
+
+export function toToolKind(toolName: string): ToolKind {
+  switch (toolName) {
+    case "read":
+      return "read";
+    case "write":
+    case "edit":
+      return "edit";
+    case "bash":
+      return "execute";
+    default:
+      return "other";
+  }
+}
+
+export function toToolCallLocations(
+  args: unknown,
+  cwd: string,
+  line?: number,
+): ToolCallLocation[] | undefined {
+  const path =
+    typeof (args as { path?: unknown } | null | undefined)?.path === "string"
+      ? (args as { path: string }).path
+      : undefined;
+  if (!path) return undefined;
+
+  const resolvedPath = isAbsolute(path) ? path : resolvePath(cwd, path);
+  return [{ path: resolvedPath, ...(typeof line === "number" ? { line } : {}) }];
+}
+
+/**
+ * Build a map of toolCallId -> args by scanning assistant messages for toolCall content blocks.
+ * Used during session replay to populate rawInput and locations for tool_call events.
+ */
+export function buildArgsMap(messages: unknown[]): Map<string, unknown> {
+  const map = new Map<string, unknown>();
+  for (const m of messages) {
+    const role = String((m as any)?.role ?? "");
+    if (role !== "assistant") continue;
+    const content = (m as any)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if ((block as any)?.type !== "toolCall") continue;
+      const id = String((block as any)?.id ?? "");
+      const args = (block as any)?.arguments;
+      if (id && args !== undefined) {
+        map.set(id, args);
+      }
+    }
+  }
+  return map;
+}
+
 export function toolResultToText(result: unknown): string {
   if (!result) return "";
 

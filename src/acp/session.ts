@@ -5,7 +5,6 @@ import type {
   SessionUpdate,
   ToolCallContent,
   ToolCallLocation,
-  ToolKind,
 } from "@agentclientprotocol/sdk";
 import { RequestError } from "@agentclientprotocol/sdk";
 import { maybeAuthRequiredError } from "./auth-required.js";
@@ -19,7 +18,11 @@ import {
   type ExtensionUiResponsePayload,
 } from "../pi-rpc/process.js";
 import { SessionStore } from "./session-store.js";
-import { toolResultToText } from "./translate/pi-tools.js";
+import {
+  toolResultToText,
+  toToolKind,
+  toToolCallLocations as sharedToToolCallLocations,
+} from "./translate/pi-tools.js";
 import { expandSlashCommand, type FileSlashCommand } from "./slash-commands.js";
 
 type SessionCreateParams = {
@@ -71,14 +74,7 @@ function toToolCallLocations(
   cwd: string,
   line?: number,
 ): ToolCallLocation[] | undefined {
-  const path =
-    typeof (args as { path?: unknown } | null | undefined)?.path === "string"
-      ? (args as { path: string }).path
-      : undefined;
-  if (!path) return undefined;
-
-  const resolvedPath = isAbsolute(path) ? path : resolvePath(cwd, path);
-  return [{ path: resolvedPath, ...(typeof line === "number" ? { line } : {}) }];
+  return sharedToToolCallLocations(args, cwd, line);
 }
 
 const debugLogPath = process.env.PI_ACP_DEBUG_LOG?.trim() || null;
@@ -892,6 +888,18 @@ export class PiAcpSession {
     }
   }
 
+  /**
+   * Return the toolCallId of the single in-progress tool call, if there is
+   * exactly one. Used to associate extension_ui_request dialogs with the
+   * tool that triggered them so ACP clients can render them in context.
+   */
+  private activeToolCallId(): string | null {
+    const inProgress = [...this.currentToolCalls.entries()].filter(
+      ([, status]) => status === "in_progress",
+    );
+    return inProgress.length === 1 ? inProgress[0][0] : null;
+  }
+
   private handleExtensionUiRequest(ev: PiRpcEvent): void {
     const requestId = String((ev as any).id ?? (ev as any).requestId ?? "");
     if (!requestId) return;
@@ -972,6 +980,11 @@ export class PiAcpSession {
     // Register the cancel hook.
     this.pendingUiRequests.set(requestId, cancelFn!);
 
+    // Associate the permission dialog with the active tool call when possible
+    // so ACP clients (e.g. Zed) can render it in the tool's context.
+    // Fall back to the UI request id for commands that run outside tool context.
+    const associatedToolCallId = this.activeToolCallId() ?? requestId;
+
     void Promise.race([
       this.conn.requestPermission({
         sessionId: this.sessionId,
@@ -981,7 +994,7 @@ export class PiAcpSession {
           kind: o.kind,
         })),
         toolCall: {
-          toolCallId: requestId,
+          toolCallId: associatedToolCallId,
           title,
           status: "pending",
         },
@@ -1032,19 +1045,4 @@ function formatAutoRetryMessage(ev: PiRpcEvent): string {
   if (delayMs > 0 && delaySeconds === 0) delaySeconds = 1;
 
   return `Retrying (attempt ${attempt}/${maxAttempts}, waiting ${delaySeconds}s)...`;
-}
-
-function toToolKind(toolName: string): ToolKind {
-  switch (toolName) {
-    case "read":
-      return "read";
-    case "write":
-    case "edit":
-      return "edit";
-    case "bash":
-      // pi still executes locally; `execute` is only the ACP rendering kind.
-      return "execute";
-    default:
-      return "other";
-  }
 }

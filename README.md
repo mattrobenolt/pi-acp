@@ -206,6 +206,30 @@ npm run test
 npm run build      # tsdown -> dist/index.js
 ```
 
+### Smoke / eval harness
+
+`scripts/smoke-eval.mjs` is a self-contained ACP smoke harness that runs against the
+compiled adapter using a fake pi subprocess (`scripts/fake-pi.mjs` + `scripts/fake-pi-bin.sh`).
+No real pi installation is required.
+
+```bash
+npm run smoke:eval          # build + run all suites
+SMOKE_VERBOSE=1 npm run smoke:eval   # print every JSON-RPC frame
+```
+
+Covered flows:
+
+- `initialize` handshake
+- `session/new` — sessionId, command advertisement via `session/update`
+- `session/prompt` — plain text, streaming `session/update` chunks
+- `session/prompt` — built-in slash command (`/session`)
+- `session/cancel`
+- `session/close`
+- `session/load` — cross-process replay
+
+Extension UI notify/select is covered by unit tests in `test/extension-ui.test.ts`
+(the ACP SDK routes those requests internally and they don't surface cleanly over raw stdio).
+
 Project layout:
 
 - `src/acp/*` – ACP server + translation layer

@@ -93,9 +93,9 @@ describe("extension_ui_request bridge", () => {
       type: "extension_ui_request",
       id: "req-1",
       method: "select",
-      title: "Pick one",
       ui: {
         type: "select",
+        title: "Pick one",
         options: [
           { id: "a", label: "Option A" },
           { id: "b", label: "Option B" },
@@ -329,6 +329,86 @@ describe("extension_ui_request bridge", () => {
       requestId: "req-9",
       response: { cancelled: true },
     });
+  });
+
+  it("toolCallId is taken from the single in-progress tool call when available", async () => {
+    const proc = makeFakeProc();
+    const conn = makeFakeConn(() => Promise.resolve({ outcome: "selected", optionId: "confirm" }));
+    makeSession(proc, conn);
+
+    // Simulate a tool_execution_start so currentToolCalls has an in-progress entry
+    proc.emit({
+      type: "tool_execution_start",
+      toolCallId: "tool-abc",
+      toolName: "bash",
+      args: { command: "ls" },
+    });
+
+    proc.emit({
+      type: "extension_ui_request",
+      id: "req-ext-1",
+      method: "confirm",
+      message: "Run dangerous thing?",
+      ui: { type: "confirm", confirmText: "Yes", rejectText: "No" },
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    const call = conn.permissionCalls[0] as any;
+    // Should use the active tool's id, not the UI request id
+    assert.equal(call.toolCall.toolCallId, "tool-abc");
+  });
+
+  it("toolCallId falls back to requestId when no tool is in progress", async () => {
+    const proc = makeFakeProc();
+    const conn = makeFakeConn(() => Promise.resolve({ outcome: "cancelled" }));
+    makeSession(proc, conn);
+
+    proc.emit({
+      type: "extension_ui_request",
+      id: "req-ext-2",
+      method: "confirm",
+      message: "Allow?",
+      ui: { type: "confirm" },
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    const call = conn.permissionCalls[0] as any;
+    assert.equal(call.toolCall.toolCallId, "req-ext-2");
+  });
+
+  it("toolCallId falls back to requestId when multiple tools are in progress", async () => {
+    const proc = makeFakeProc();
+    const conn = makeFakeConn(() => Promise.resolve({ outcome: "cancelled" }));
+    makeSession(proc, conn);
+
+    // Start two tools simultaneously
+    proc.emit({
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: {},
+    });
+    proc.emit({
+      type: "tool_execution_start",
+      toolCallId: "tool-2",
+      toolName: "read",
+      args: {},
+    });
+
+    proc.emit({
+      type: "extension_ui_request",
+      id: "req-ext-3",
+      method: "confirm",
+      ui: { type: "confirm" },
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    const call = conn.permissionCalls[0] as any;
+    // Ambiguous — fall back to request id
+    assert.equal(call.toolCall.toolCallId, "req-ext-3");
   });
 
   it("missing requestId: silently ignored", () => {

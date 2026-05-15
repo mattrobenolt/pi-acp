@@ -30,7 +30,12 @@ import { SessionStore } from "./session-store.js";
 import { PiRpcProcess } from "../pi-rpc/process.js";
 import { listPiSessions, findPiSessionFile } from "./pi-sessions.js";
 import { normalizePiAssistantText, normalizePiMessageText } from "./translate/pi-messages.js";
-import { toolResultToText } from "./translate/pi-tools.js";
+import {
+  toolResultToText,
+  toToolKind,
+  toToolCallLocations,
+  buildArgsMap,
+} from "./translate/pi-tools.js";
 import { promptToPiMessage } from "./translate/prompt.js";
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from "./slash-commands.js";
 import {
@@ -1183,6 +1188,8 @@ export class PiAcpAgent implements ACPAgent {
       messageCount: messages.length,
     });
 
+    const argsByToolCallId = buildArgsMap(messages);
+
     for (const m of messages) {
       const role = String(m?.role ?? "");
 
@@ -1216,6 +1223,8 @@ export class PiAcpAgent implements ACPAgent {
         const toolName = String((m as any)?.toolName ?? "tool");
         const toolCallId = String((m as any)?.toolCallId ?? randomUUID());
         const isError = Boolean((m as any)?.isError);
+        const args = argsByToolCallId.get(toolCallId);
+        const locations = toToolCallLocations(args, params.cwd);
 
         // Create a synthetic ACP tool call to render historic tool usage.
         await this.conn.sessionUpdate({
@@ -1224,17 +1233,11 @@ export class PiAcpAgent implements ACPAgent {
             sessionUpdate: "tool_call",
             toolCallId,
             title: toolName,
-            kind:
-              toolName === "read"
-                ? "read"
-                : toolName === "write" || toolName === "edit"
-                  ? "edit"
-                  : toolName === "bash"
-                    ? "execute"
-                    : "other",
+            kind: toToolKind(toolName),
             status: "completed",
-            rawInput: null,
+            rawInput: args ?? null,
             rawOutput: m,
+            locations,
           },
         });
 
