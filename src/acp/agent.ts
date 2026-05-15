@@ -315,7 +315,7 @@ export class PiAcpAgent implements ACPAgent {
       ? availableModels.models.length
       : 0;
 
-    if (rawModelsCount === 0) {
+    if (rawModelsCount === 0 && process.env.PI_ACP_SKIP_PI_AUTH !== "1") {
       this.cleanupFailedNewSession(session.sessionId, state);
       throw RequestError.authRequired(
         { authMethods: getAuthMethods() },
