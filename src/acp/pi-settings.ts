@@ -54,6 +54,14 @@ export function getAgentDir(): string {
  * Mirror pi settings semantics (global + project merge, project overrides global).
  * Only returns the bits we currently need.
  */
+function envBool(name: string): boolean | null {
+  const value = process.env[name];
+  if (value == null) return null;
+  if (["1", "true", "yes", "on"].includes(value.toLowerCase())) return true;
+  if (["0", "false", "no", "off"].includes(value.toLowerCase())) return false;
+  return null;
+}
+
 export function getEnableSkillCommands(cwd: string): boolean {
   const merged = getMergedSettings(cwd);
 
@@ -71,6 +79,15 @@ export function getEnableSkillCommands(cwd: string): boolean {
  * Mirror pi's quietStartup setting: if true, pi suppresses the verbose startup prelude.
  * We use it to decide whether to synthesize + emit our own "startup info" message.
  */
+export function getEnableExtensionCommands(cwd: string): boolean {
+  const fromEnv = envBool("PI_ACP_ENABLE_EXTENSION_COMMANDS");
+  if (fromEnv != null) return fromEnv;
+
+  const merged = getMergedSettings(cwd);
+  const direct = merged.enableExtensionCommands;
+  return typeof direct === "boolean" ? direct : true;
+}
+
 export function getQuietStartup(cwd: string): boolean {
   const merged = getMergedSettings(cwd);
 

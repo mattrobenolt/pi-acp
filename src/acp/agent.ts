@@ -33,6 +33,7 @@ import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from "./slas
 import {
   getAgentDir,
   getConfiguredPackages,
+  getEnableExtensionCommands,
   getEnableSkillCommands,
   getEnabledModels,
   getQuietStartup,
@@ -256,6 +257,7 @@ export class PiAcpAgent implements ACPAgent {
 
     const fileCommands = loadSlashCommands(params.cwd);
     const enableSkillCommands = getEnableSkillCommands(params.cwd);
+    const includeExtensionCommands = getEnableExtensionCommands(params.cwd);
 
     // Pi doesn't support mcpServers, but we accept and store.
     const session = await this.sessions.create({
@@ -391,7 +393,7 @@ export class PiAcpAgent implements ACPAgent {
           const pi = (await session.proc.getCommands()) as any;
           const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
             enableSkillCommands,
-            includeExtensionCommands: false,
+            includeExtensionCommands,
           });
 
           await this.conn.sessionUpdate({
@@ -1025,6 +1027,7 @@ export class PiAcpAgent implements ACPAgent {
 
     const fileCommands = loadSlashCommands(params.cwd);
     const enableSkillCommands = getEnableSkillCommands(params.cwd);
+    const includeExtensionCommands = getEnableExtensionCommands(params.cwd);
 
     const session = this.sessions.getOrCreate(params.sessionId, {
       cwd: params.cwd,
@@ -1161,7 +1164,7 @@ export class PiAcpAgent implements ACPAgent {
           const pi = (await proc.getCommands()) as any;
           const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
             enableSkillCommands,
-            includeExtensionCommands: false,
+            includeExtensionCommands,
           });
 
           await this.conn.sessionUpdate({
