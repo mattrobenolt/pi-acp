@@ -743,10 +743,13 @@ export class PiAcpSession {
           toolCallId,
           status: "in_progress",
           content:
-            terminal.content ??
-            (text
-              ? ([{ type: "content", content: { type: "text", text } }] satisfies ToolCallContent[])
-              : undefined),
+            toolName === "bash"
+              ? undefined
+              : text
+                ? ([
+                    { type: "content", content: { type: "text", text } },
+                  ] satisfies ToolCallContent[])
+                : undefined,
           rawOutput: partial,
           ...terminal,
         });
@@ -812,7 +815,7 @@ export class PiAcpSession {
           sessionUpdate: "tool_call_update",
           toolCallId,
           status: isError ? "failed" : "completed",
-          content: terminal.content ?? content,
+          content: toolName === "bash" ? undefined : content,
           rawOutput: result,
           ...terminal,
         });
@@ -1170,12 +1173,10 @@ function terminalOutput(
   toolCallId: string,
   data: string,
   exit?: { exitCode: number; signal?: string | null },
-): { content?: ToolCallContent[]; _meta?: Record<string, unknown> } {
+): { _meta?: Record<string, unknown> } {
   if (toolName !== "bash" || (!data && !exit)) return {};
   return {
-    content: [{ type: "terminal", terminalId: toolCallId }],
     _meta: {
-      terminal_info: { terminal_id: toolCallId },
       ...(data ? { terminal_output: { terminal_id: toolCallId, data } } : {}),
       ...(exit
         ? {

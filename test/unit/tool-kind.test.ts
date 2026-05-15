@@ -49,7 +49,7 @@ test("PiAcpSession: renders bash tools as execute kind", async () => {
       (u.update as any)._meta?.terminal_output,
   );
   assert.ok(output, "expected terminal output update");
-  assert.deepEqual((output.update as any).content, [{ type: "terminal", terminalId: "t1" }]);
+  assert.equal((output.update as any).content, undefined);
   assert.equal((output.update as any)._meta.terminal_output.data, "\u001b[31mred\u001b[0m\n");
 
   proc.emit({
@@ -68,6 +68,7 @@ test("PiAcpSession: renders bash tools as execute kind", async () => {
       (u.update as any).status === "completed",
   );
   assert.ok(completed, "expected completed update");
+  assert.equal((completed.update as any).content, undefined);
   assert.equal((completed.update as any)._meta.terminal_output, undefined);
   assert.deepEqual((completed.update as any)._meta.terminal_exit, {
     terminal_id: "t1",
