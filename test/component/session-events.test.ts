@@ -100,7 +100,7 @@ test("PiAcpSession: emits tool_call + tool_call_update + completes", async () =>
   assert.equal(conn.updates[0]!.update.sessionUpdate, "tool_call");
   assert.equal((conn.updates[0]!.update as any).toolCallId, "t1");
   assert.equal((conn.updates[0]!.update as any).status, "in_progress");
-  assert.equal((conn.updates[0]!.update as any).title, "bash: ls");
+  assert.equal((conn.updates[0]!.update as any).title, "ls");
   assert.equal((conn.updates[0]!.update as any).locations, undefined);
 
   assert.equal(conn.updates[1]!.update.sessionUpdate, "tool_call_update");

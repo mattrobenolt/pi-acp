@@ -7,7 +7,7 @@ export function toToolTitle(toolName: string, args: unknown): string {
     case "bash": {
       const command =
         typeof a?.command === "string" ? a.command : typeof a?.cmd === "string" ? a.cmd : undefined;
-      return command ? `bash: ${command}` : "bash";
+      return command ?? "bash";
     }
     case "read": {
       const path = typeof a?.path === "string" ? a.path : undefined;
@@ -50,7 +50,7 @@ export function toToolTitle(toolName: string, args: unknown): string {
     case "term": {
       const action = typeof a?.action === "string" ? a.action : undefined;
       const name = typeof a?.name === "string" ? a.name : undefined;
-      return action ? `term: ${action}${name ? ` ${name}` : ""}` : "term";
+      return action ? `${action}${name ? ` ${name}` : ""}` : "term";
     }
     case "memory_read":
     case "memory_search":
@@ -82,24 +82,15 @@ export function toToolKind(toolName: string): ToolKind {
       return "edit";
     case "bash":
       return "execute";
+    case "ls":
     case "find":
     case "grep":
     case "websearch":
       return "search";
-    case "ls":
-      return "read";
     case "webfetch":
       return "fetch";
     case "term":
       return "execute";
-    case "mcp":
-    case "subagent":
-    case "todo":
-    case "scratchpad":
-    case "memory_read":
-    case "memory_search":
-    case "memory_write":
-      return "other";
     default:
       return "other";
   }
