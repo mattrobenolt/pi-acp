@@ -47,10 +47,10 @@ export function toToolTitle(toolName: string, args: unknown, cwd?: string): stri
       else if (outputMode === "count") label += " -c";
       const head = numberArg(a, "head_limit") ?? numberArg(a, "limit");
       if (head !== undefined) label += ` | head -${head}`;
-      if (typeof a?.glob === "string") label += ` --include=\"${a.glob}\"`;
+      if (typeof a?.glob === "string") label += ` --include="${a.glob}"`;
       if (typeof a?.type === "string") label += ` --type=${a.type}`;
       if (a?.multiline === true) label += " -P";
-      if (typeof a?.pattern === "string") label += ` \"${a.pattern}\"`;
+      if (typeof a?.pattern === "string") label += ` "${a.pattern}"`;
       if (typeof a?.path === "string" && a.path && a.path !== ".")
         label += ` ${toDisplayPath(a.path, cwd)}`;
       return label;
@@ -65,7 +65,7 @@ export function toToolTitle(toolName: string, args: unknown, cwd?: string): stri
     }
     case "websearch": {
       const query = typeof a?.query === "string" ? a.query : undefined;
-      return query ? `\"${query}\"` : "Web search";
+      return query ? `"${query}"` : "Web search";
     }
     case "mcp": {
       const tool = typeof a?.tool === "string" ? a.tool : undefined;
