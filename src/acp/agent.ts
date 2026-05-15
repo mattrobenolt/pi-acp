@@ -17,140 +17,148 @@ import {
   type SessionInfo,
   type SetSessionModeRequest,
   type SetSessionModeResponse,
-  type StopReason
-} from '@agentclientprotocol/sdk'
-import { getAuthMethods } from './auth.js'
-import { debugLog, SessionManager } from './session.js'
-import { SessionStore } from './session-store.js'
-import { PiRpcProcess } from '../pi-rpc/process.js'
-import { listPiSessions, findPiSessionFile } from './pi-sessions.js'
-import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
-import { toolResultToText } from './translate/pi-tools.js'
-import { promptToPiMessage } from './translate/prompt.js'
-import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
-import { getAgentDir, getEnableSkillCommands, getEnabledModels, getQuietStartup } from './pi-settings.js'
-import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
-import { maybeAuthRequiredError } from './auth-required.js'
-import { isAbsolute } from 'node:path'
-import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from 'node:fs'
-import type { AvailableCommand } from '@agentclientprotocol/sdk'
-import { join, dirname, basename } from 'node:path'
-import { spawnSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+  type StopReason,
+} from "@agentclientprotocol/sdk";
+import { getAuthMethods } from "./auth.js";
+import { debugLog, SessionManager } from "./session.js";
+import { SessionStore } from "./session-store.js";
+import { PiRpcProcess } from "../pi-rpc/process.js";
+import { listPiSessions, findPiSessionFile } from "./pi-sessions.js";
+import { normalizePiAssistantText, normalizePiMessageText } from "./translate/pi-messages.js";
+import { toolResultToText } from "./translate/pi-tools.js";
+import { promptToPiMessage } from "./translate/prompt.js";
+import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from "./slash-commands.js";
+import {
+  getAgentDir,
+  getEnableSkillCommands,
+  getEnabledModels,
+  getQuietStartup,
+} from "./pi-settings.js";
+import { toAvailableCommandsFromPiGetCommands } from "./pi-commands.js";
+import { maybeAuthRequiredError } from "./auth-required.js";
+import { isAbsolute } from "node:path";
+import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import type { AvailableCommand } from "@agentclientprotocol/sdk";
+import { join, dirname, basename } from "node:path";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
-type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 function builtinAvailableCommands(): AvailableCommand[] {
   return [
     {
-      name: 'compact',
-      description: 'Manually compact the session context',
-      input: { hint: 'optional custom instructions' }
+      name: "compact",
+      description: "Manually compact the session context",
+      input: { hint: "optional custom instructions" },
     },
     {
-      name: 'autocompact',
-      description: 'Toggle automatic context compaction',
-      input: { hint: 'on|off|toggle' }
+      name: "autocompact",
+      description: "Toggle automatic context compaction",
+      input: { hint: "on|off|toggle" },
     },
     {
-      name: 'export',
-      description: 'Export session to an HTML file in the session cwd'
+      name: "export",
+      description: "Export session to an HTML file in the session cwd",
     },
     {
-      name: 'session',
-      description: 'Show session stats (messages, tokens, cost, session file)'
+      name: "session",
+      description: "Show session stats (messages, tokens, cost, session file)",
     },
     {
-      name: 'name',
-      description: 'Set session display name',
-      input: { hint: '<name>' }
+      name: "name",
+      description: "Set session display name",
+      input: { hint: "<name>" },
     },
     {
-      name: 'steering',
-      description: 'Get/set pi steering message delivery mode (how queued steering messages are delivered)',
-      input: { hint: '(no args to show) all | one-at-a-time' }
+      name: "steering",
+      description:
+        "Get/set pi steering message delivery mode (how queued steering messages are delivered)",
+      input: { hint: "(no args to show) all | one-at-a-time" },
     },
     {
-      name: 'follow-up',
-      description: 'Get/set pi follow-up message delivery mode (how queued follow-up messages are delivered)',
-      input: { hint: '(no args to show) all | one-at-a-time' }
+      name: "follow-up",
+      description:
+        "Get/set pi follow-up message delivery mode (how queued follow-up messages are delivered)",
+      input: { hint: "(no args to show) all | one-at-a-time" },
     },
     {
-      name: 'changelog',
-      description: 'Show pi changelog'
-    }
-  ]
+      name: "changelog",
+      description: "Show pi changelog",
+    },
+  ];
 }
 
 function mergeCommands(a: AvailableCommand[], b: AvailableCommand[]): AvailableCommand[] {
   // Preserve order, de-dupe by name (first wins).
-  const out: AvailableCommand[] = []
-  const seen = new Set<string>()
+  const out: AvailableCommand[] = [];
+  const seen = new Set<string>();
 
   for (const c of [...a, ...b]) {
-    if (seen.has(c.name)) continue
-    seen.add(c.name)
-    out.push(c)
+    if (seen.has(c.name)) continue;
+    seen.add(c.name);
+    out.push(c);
   }
 
-  return out
+  return out;
 }
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath } from "node:url";
 
-const pkg = readNearestPackageJson(import.meta.url)
+const pkg = readNearestPackageJson(import.meta.url);
 
 export class PiAcpAgent implements ACPAgent {
-  private readonly conn: AgentSideConnection
-  private readonly sessions = new SessionManager()
-  private readonly store = new SessionStore()
+  private readonly conn: AgentSideConnection;
+  private readonly sessions = new SessionManager();
+  private readonly store = new SessionStore();
 
   dispose(): void {
-    this.sessions.disposeAll()
+    this.sessions.disposeAll();
   }
 
   // Remember recent session cwd and use it as the default filter.
-  private lastSessionCwd: string | null = null
+  private lastSessionCwd: string | null = null;
 
   constructor(conn: AgentSideConnection, _config?: unknown) {
-    this.conn = conn
-    void _config
+    this.conn = conn;
+    void _config;
   }
 
   private cleanupFailedNewSession(sessionId: string, state?: any | null): void {
-    this.sessions.close(sessionId)
+    this.sessions.close(sessionId);
 
     const sessionFile =
-      typeof state?.sessionFile === 'string' && state.sessionFile.trim()
+      typeof state?.sessionFile === "string" && state.sessionFile.trim()
         ? state.sessionFile
-        : this.store.get(sessionId)?.sessionFile
+        : this.store.get(sessionId)?.sessionFile;
 
-    if (typeof sessionFile === 'string' && sessionFile.trim()) {
+    if (typeof sessionFile === "string" && sessionFile.trim()) {
       try {
-        if (existsSync(sessionFile)) unlinkSync(sessionFile)
+        if (existsSync(sessionFile)) unlinkSync(sessionFile);
       } catch {
         // ignore cleanup failures; the auth/internal error is the primary result
       }
     }
 
-    this.store.delete(sessionId)
+    this.store.delete(sessionId);
   }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
     // We currently only support ACP protocol version 1.
-    const supportedVersion = 1
-    const requested = params.protocolVersion
+    const supportedVersion = 1;
+    const requested = params.protocolVersion;
 
     return {
       protocolVersion: requested === supportedVersion ? requested : supportedVersion,
       agentInfo: {
-        name: pkg.name ?? 'pi-acp',
-        title: 'pi ACP adapter',
-        version: pkg.version ?? '0.0.0'
+        name: pkg.name ?? "pi-acp",
+        title: "pi ACP adapter",
+        version: pkg.version ?? "0.0.0",
       },
       // Zed currently uses ClientCapabilities._meta["terminal-auth"] to decide whether to show
       // the "Authenticate" banner/button. If not supported, we still return the method for the registry.
       authMethods: getAuthMethods({
-        supportsTerminalAuthMeta: (params as any)?.clientCapabilities?._meta?.['terminal-auth'] === true
+        supportsTerminalAuthMeta:
+          (params as any)?.clientCapabilities?._meta?.["terminal-auth"] === true,
       }),
       agentCapabilities: {
         loadSession: true,
@@ -158,28 +166,31 @@ export class PiAcpAgent implements ACPAgent {
         promptCapabilities: {
           image: true,
           audio: false,
-          embeddedContext: process.env.PI_ACP_ENABLE_EMBEDDED_CONTEXT === 'true'
+          embeddedContext: process.env.PI_ACP_ENABLE_EMBEDDED_CONTEXT === "true",
         },
         sessionCapabilities: {
           // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
           // Enables a native session picker in clients that support it.
-          list: {}
-        }
-      }
-    }
+          list: {},
+        },
+      },
+    };
   }
 
   async newSession(params: NewSessionRequest) {
-    debugLog('agent.newSession.enter', { cwd: params.cwd, mcpServers: params.mcpServers?.length ?? 0 })
+    debugLog("agent.newSession.enter", {
+      cwd: params.cwd,
+      mcpServers: params.mcpServers?.length ?? 0,
+    });
 
     if (!isAbsolute(params.cwd)) {
-      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
+      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
     }
 
-    this.lastSessionCwd = params.cwd
+    this.lastSessionCwd = params.cwd;
 
-    const fileCommands = loadSlashCommands(params.cwd)
-    const enableSkillCommands = getEnableSkillCommands(params.cwd)
+    const fileCommands = loadSlashCommands(params.cwd);
+    const enableSkillCommands = getEnableSkillCommands(params.cwd);
 
     // Pi doesn't support mcpServers, but we accept and store.
     const session = await this.sessions.create({
@@ -187,94 +198,98 @@ export class PiAcpAgent implements ACPAgent {
       mcpServers: params.mcpServers,
       conn: this.conn,
       fileCommands,
-      piCommand: process.env.PI_ACP_PI_COMMAND
-    })
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+    });
 
     // Fetch state + models once (parallel) to reduce startup latency.
-    let state: any = null
-    let availableModels: any = null
-    let stateErr: unknown = null
-    let availableModelsErr: unknown = null
+    let state: any = null;
+    let availableModels: any = null;
+    let stateErr: unknown = null;
+    let availableModelsErr: unknown = null;
 
     await Promise.all([
       session.proc
         .getState()
-        .then(s => {
-          state = s as any
+        .then((s) => {
+          state = s as any;
         })
-        .catch(err => {
-          stateErr = err
-          state = null
+        .catch((err) => {
+          stateErr = err;
+          state = null;
         }),
       session.proc
         .getAvailableModels()
-        .then(m => {
-          availableModels = m as any
+        .then((m) => {
+          availableModels = m as any;
         })
-        .catch(err => {
-          availableModelsErr = err
-          availableModels = null
-        })
-    ])
+        .catch((err) => {
+          availableModelsErr = err;
+          availableModels = null;
+        }),
+    ]);
 
-    const availableModelsAuthErr = maybeAuthRequiredError(availableModelsErr)
+    const availableModelsAuthErr = maybeAuthRequiredError(availableModelsErr);
 
     if (availableModelsAuthErr) {
-      this.cleanupFailedNewSession(session.sessionId, state)
-      throw availableModelsAuthErr
+      this.cleanupFailedNewSession(session.sessionId, state);
+      throw availableModelsAuthErr;
     }
 
     if (availableModelsErr) {
-      this.cleanupFailedNewSession(session.sessionId, state)
-      throw RequestError.internalError({}, String((availableModelsErr as Error)?.message ?? availableModelsErr))
+      this.cleanupFailedNewSession(session.sessionId, state);
+      throw RequestError.internalError(
+        {},
+        String((availableModelsErr as Error)?.message ?? availableModelsErr),
+      );
     }
 
     // If pi has no models available after spawning, it's effectively unauthenticated.
-    const rawModelsCount = Array.isArray(availableModels?.models) ? availableModels.models.length : 0
+    const rawModelsCount = Array.isArray(availableModels?.models)
+      ? availableModels.models.length
+      : 0;
 
     if (rawModelsCount === 0) {
-      this.cleanupFailedNewSession(session.sessionId, state)
+      this.cleanupFailedNewSession(session.sessionId, state);
       throw RequestError.authRequired(
         { authMethods: getAuthMethods() },
-        'Configure an API key or log in with an OAuth provider.'
-      )
+        "Configure an API key or log in with an OAuth provider.",
+      );
     }
 
     if (stateErr && maybeAuthRequiredError(stateErr)) {
-      this.cleanupFailedNewSession(session.sessionId, state)
+      this.cleanupFailedNewSession(session.sessionId, state);
       throw RequestError.authRequired(
         { authMethods: getAuthMethods() },
-        'Configure an API key or log in with an OAuth provider.'
-      )
+        "Configure an API key or log in with an OAuth provider.",
+      );
     }
 
-    const models = await getModelState(session.proc, params.cwd, { state, availableModels })
-    const thinking = await getThinkingState(session.proc, { state })
+    const models = await getModelState(session.proc, params.cwd, { state, availableModels });
+    const thinking = await getThinkingState(session.proc, { state });
 
-    const quietStartup = getQuietStartup(params.cwd)
-    const updateNotice = buildUpdateNotice()
+    const quietStartup = getQuietStartup(params.cwd);
+    const updateNotice = buildUpdateNotice();
 
     // If quietStartup is enabled, suppress the full "startup info" prelude, but still surface
     // the "New version available" notice (if any) since it's high-signal and actionable.
     const preludeText = quietStartup
       ? updateNotice
-        ? updateNotice + '\n'
-        : ''
+        ? updateNotice + "\n"
+        : ""
       : buildStartupInfo({
           cwd: params.cwd,
           fileCommands,
-          updateNotice
-        })
+          updateNotice,
+        });
 
-    if (preludeText)
-      session.setStartupInfo(preludeText)
+    if (preludeText) session.setStartupInfo(preludeText);
 
-      // Policy: within a single ACP connection (one client window), keep only one live pi subprocess.
-      // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.
-      // It does NOT affect other client windows because they run in separate agent processes.
-      //
-      // (Tests sometimes stub out `this.sessions`, so guard the call.)
-    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
+    // Policy: within a single ACP connection (one client window), keep only one live pi subprocess.
+    // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.
+    // It does NOT affect other client windows because they run in separate agent processes.
+    //
+    // (Tests sometimes stub out `this.sessions`, so guard the call.)
+    (this.sessions as any).closeAllExcept?.(session.sessionId);
 
     const response = {
       sessionId: session.sessionId,
@@ -282,14 +297,14 @@ export class PiAcpAgent implements ACPAgent {
       modes: thinking,
       _meta: {
         piAcp: {
-          startupInfo: preludeText || null
-        }
-      }
-    }
+          startupInfo: preludeText || null,
+        },
+      },
+    };
 
     // Try to send it immediately after session/new returns; if the client ignores it,
     // it will still be emitted as the first chunk of the first prompt.
-    if (preludeText) setTimeout(() => session.sendStartupInfoIfPending(), 0)
+    if (preludeText) setTimeout(() => session.sendStartupInfoIfPending(), 0);
 
     // Advertise slash commands (ACP: available_commands_update)
     // Important: some clients (e.g. Zed) will ignore notifications for an unknown sessionId.
@@ -297,20 +312,20 @@ export class PiAcpAgent implements ACPAgent {
     setTimeout(() => {
       void (async () => {
         try {
-          const pi = (await session.proc.getCommands()) as any
+          const pi = (await session.proc.getCommands()) as any;
           const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
             enableSkillCommands,
-            includeExtensionCommands: false
-          })
+            includeExtensionCommands: false,
+          });
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'available_commands_update',
-              availableCommands: mergeCommands(commands, builtinAvailableCommands())
-            }
-          })
-          return
+              sessionUpdate: "available_commands_update",
+              availableCommands: mergeCommands(commands, builtinAvailableCommands()),
+            },
+          });
+          return;
         } catch {
           // Fall back to file-based prompt templates (legacy behavior).
         }
@@ -318,276 +333,282 @@ export class PiAcpAgent implements ACPAgent {
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'available_commands_update',
-            availableCommands: mergeCommands(toAvailableCommands(fileCommands), builtinAvailableCommands())
-          }
-        })
-      })()
-    }, 0)
+            sessionUpdate: "available_commands_update",
+            availableCommands: mergeCommands(
+              toAvailableCommands(fileCommands),
+              builtinAvailableCommands(),
+            ),
+          },
+        });
+      })();
+    }, 0);
 
-    debugLog('agent.newSession.return', {
+    debugLog("agent.newSession.return", {
       sessionId: session.sessionId,
       cwd: params.cwd,
-      hasStartupInfo: Boolean(preludeText)
-    })
+      hasStartupInfo: Boolean(preludeText),
+    });
 
-    return response
+    return response;
   }
 
   async authenticate(_params: AuthenticateRequest) {
     // Terminal Auth is handled out-of-band by re-launching the binary with `--terminal-login`.
     // If the client calls `authenticate` anyway, we can no-op successfully.
-    return
+    return;
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
-    debugLog('agent.prompt.enter', {
+    debugLog("agent.prompt.enter", {
       sessionId: params.sessionId,
-      prompt: params.prompt
-    })
+      prompt: params.prompt,
+    });
 
-    const session = this.sessions.get(params.sessionId)
+    const session = this.sessions.get(params.sessionId);
 
-    const { message, images } = promptToPiMessage(params.prompt)
+    const { message, images } = promptToPiMessage(params.prompt);
 
-    debugLog('agent.prompt.normalized', {
+    debugLog("agent.prompt.normalized", {
       sessionId: params.sessionId,
       message,
-      imageCount: images.length
-    })
+      imageCount: images.length,
+    });
 
     // Built-in ACP slash command handling (headless-friendly subset).
     // Note: file-based slash commands are expanded inside session.prompt().
-    if (images.length === 0 && message.trimStart().startsWith('/')) {
-      const trimmed = message.trim()
-      const space = trimmed.indexOf(' ')
-      const cmd = space === -1 ? trimmed.slice(1) : trimmed.slice(1, space)
-      const argsString = space === -1 ? '' : trimmed.slice(space + 1)
-      const args = parseCommandArgs(argsString)
+    if (images.length === 0 && message.trimStart().startsWith("/")) {
+      const trimmed = message.trim();
+      const space = trimmed.indexOf(" ");
+      const cmd = space === -1 ? trimmed.slice(1) : trimmed.slice(1, space);
+      const argsString = space === -1 ? "" : trimmed.slice(space + 1);
+      const args = parseCommandArgs(argsString);
 
-      if (cmd === 'compact') {
-        const customInstructions = args.join(' ').trim() || undefined
-        const res = await session.proc.compact(customInstructions)
+      if (cmd === "compact") {
+        const customInstructions = args.join(" ").trim() || undefined;
+        const res = await session.proc.compact(customInstructions);
 
-        const r: any = res && typeof res === 'object' ? (res as any) : null
-        const tokensBefore = typeof r?.tokensBefore === 'number' ? r.tokensBefore : null
-        const summary = typeof r?.summary === 'string' ? r.summary : null
+        const r: any = res && typeof res === "object" ? (res as any) : null;
+        const tokensBefore = typeof r?.tokensBefore === "number" ? r.tokensBefore : null;
+        const summary = typeof r?.summary === "string" ? r.summary : null;
 
         const headerLines = [
-          `Compaction completed.${customInstructions ? ' (custom instructions applied)' : ''}`,
-          tokensBefore !== null ? `Tokens before: ${tokensBefore}` : null
-        ].filter(Boolean)
+          `Compaction completed.${customInstructions ? " (custom instructions applied)" : ""}`,
+          tokensBefore !== null ? `Tokens before: ${tokensBefore}` : null,
+        ].filter(Boolean);
 
-        const text = headerLines.join('\n') + (summary ? `\n\n${summary}` : '')
+        const text = headerLines.join("\n") + (summary ? `\n\n${summary}` : "");
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text }
-          }
-        })
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
 
-      if (cmd === 'session') {
-        const stats = (await session.proc.getSessionStats()) as any
+      if (cmd === "session") {
+        const stats = (await session.proc.getSessionStats()) as any;
 
-        const lines: string[] = []
-        if (stats?.sessionId) lines.push(`Session: ${stats.sessionId}`)
-        if (stats?.sessionFile) lines.push(`Session file: ${stats.sessionFile}`)
-        if (typeof stats?.totalMessages === 'number') lines.push(`Messages: ${stats.totalMessages}`)
+        const lines: string[] = [];
+        if (stats?.sessionId) lines.push(`Session: ${stats.sessionId}`);
+        if (stats?.sessionFile) lines.push(`Session file: ${stats.sessionFile}`);
+        if (typeof stats?.totalMessages === "number")
+          lines.push(`Messages: ${stats.totalMessages}`);
 
-        if (typeof stats?.cost === 'number') lines.push(`Cost: ${stats.cost}`)
+        if (typeof stats?.cost === "number") lines.push(`Cost: ${stats.cost}`);
 
-        const t = stats?.tokens
-        if (t && typeof t === 'object') {
-          const parts: string[] = []
-          if (typeof t.input === 'number') parts.push(`in ${t.input}`)
-          if (typeof t.output === 'number') parts.push(`out ${t.output}`)
-          if (typeof t.cacheRead === 'number') parts.push(`cache read ${t.cacheRead}`)
-          if (typeof t.cacheWrite === 'number') parts.push(`cache write ${t.cacheWrite}`)
-          if (typeof t.total === 'number') parts.push(`total ${t.total}`)
-          if (parts.length) lines.push(`Tokens: ${parts.join(', ')}`)
+        const t = stats?.tokens;
+        if (t && typeof t === "object") {
+          const parts: string[] = [];
+          if (typeof t.input === "number") parts.push(`in ${t.input}`);
+          if (typeof t.output === "number") parts.push(`out ${t.output}`);
+          if (typeof t.cacheRead === "number") parts.push(`cache read ${t.cacheRead}`);
+          if (typeof t.cacheWrite === "number") parts.push(`cache write ${t.cacheWrite}`);
+          if (typeof t.total === "number") parts.push(`total ${t.total}`);
+          if (parts.length) lines.push(`Tokens: ${parts.join(", ")}`);
         }
 
         // Fallback if stats shape changes.
-        const text = lines.length ? lines.join('\n') : `Session stats:\n${JSON.stringify(stats, null, 2)}`
+        const text = lines.length
+          ? lines.join("\n")
+          : `Session stats:\n${JSON.stringify(stats, null, 2)}`;
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text }
-          }
-        })
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
 
-      if (cmd === 'name') {
-        const name = args.join(' ').trim()
+      if (cmd === "name") {
+        const name = args.join(" ").trim();
         if (!name) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: 'Usage: /name <name>' }
-            }
-          })
-          return { stopReason: 'end_turn' }
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "Usage: /name <name>" },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
         try {
-          await session.proc.setSessionName(name)
+          await session.proc.setSessionName(name);
         } catch (e: any) {
-          const msg = String(e?.message ?? e)
+          const msg = String(e?.message ?? e);
           const hint = /set_session_name/i.test(msg)
-            ? ' This requires a newer pi version that supports `set_session_name` in RPC mode.'
-            : ''
+            ? " This requires a newer pi version that supports `set_session_name` in RPC mode."
+            : "";
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: `Failed to set session name: ${msg}${hint}` }
-            }
-          })
-          return { stopReason: 'end_turn' }
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: `Failed to set session name: ${msg}${hint}` },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'session_info_update',
+            sessionUpdate: "session_info_update",
             title: name,
-            updatedAt: new Date().toISOString()
-          }
-        })
+            updatedAt: new Date().toISOString(),
+          },
+        });
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: `Session name set: ${name}` }
-          }
-        })
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `Session name set: ${name}` },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
 
-      if (cmd === 'steering') {
-        const modeRaw = String(args[0] ?? '').toLowerCase()
-        const state = (await session.proc.getState()) as any
-        const current = String(state?.steeringMode ?? '')
+      if (cmd === "steering") {
+        const modeRaw = String(args[0] ?? "").toLowerCase();
+        const state = (await session.proc.getState()) as any;
+        const current = String(state?.steeringMode ?? "");
 
         // If no arg, just report current.
         if (!modeRaw) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: `Steering mode: ${current || 'unknown'}`
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: `Steering mode: ${current || "unknown"}`,
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
-        if (modeRaw !== 'all' && modeRaw !== 'one-at-a-time') {
+        if (modeRaw !== "all" && modeRaw !== "one-at-a-time") {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: 'Usage: /steering all | /steering one-at-a-time'
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: "Usage: /steering all | /steering one-at-a-time",
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
-        await session.proc.setSteeringMode(modeRaw as 'all' | 'one-at-a-time')
+        await session.proc.setSteeringMode(modeRaw as "all" | "one-at-a-time");
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: `Steering mode set to: ${modeRaw}` }
-          }
-        })
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `Steering mode set to: ${modeRaw}` },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
 
-      if (cmd === 'follow-up') {
-        const modeRaw = String(args[0] ?? '').toLowerCase()
-        const state = (await session.proc.getState()) as any
-        const current = String(state?.followUpMode ?? '')
+      if (cmd === "follow-up") {
+        const modeRaw = String(args[0] ?? "").toLowerCase();
+        const state = (await session.proc.getState()) as any;
+        const current = String(state?.followUpMode ?? "");
 
         // If no arg, just report current.
         if (!modeRaw) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: `Follow-up mode: ${current || 'unknown'}`
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: `Follow-up mode: ${current || "unknown"}`,
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
-        if (modeRaw !== 'all' && modeRaw !== 'one-at-a-time') {
+        if (modeRaw !== "all" && modeRaw !== "one-at-a-time") {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: 'Usage: /follow-up all | /follow-up one-at-a-time'
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: "Usage: /follow-up all | /follow-up one-at-a-time",
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
-        await session.proc.setFollowUpMode(modeRaw as 'all' | 'one-at-a-time')
+        await session.proc.setFollowUpMode(modeRaw as "all" | "one-at-a-time");
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: `Follow-up mode set to: ${modeRaw}` }
-          }
-        })
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: `Follow-up mode set to: ${modeRaw}` },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
 
-      if (cmd === 'changelog') {
+      if (cmd === "changelog") {
         // Read pi's installed CHANGELOG.md. Adapter-side, no model call.
         const findChangelog = (): string | null => {
           // 1) Locate the installed pi package by resolving the `pi` executable.
           // On Node installs, `pi` typically resolves to .../@earendil-works/pi-coding-agent/dist/cli.js
           try {
-            const whichCmd = process.platform === 'win32' ? 'where' : 'which'
-            const which = spawnSync(whichCmd, ['pi'], { encoding: 'utf-8' })
-            const piPath = String(which.stdout ?? '')
+            const whichCmd = process.platform === "win32" ? "where" : "which";
+            const which = spawnSync(whichCmd, ["pi"], { encoding: "utf-8" });
+            const piPath = String(which.stdout ?? "")
               .split(/\r?\n/)[0]
-              ?.trim()
+              ?.trim();
 
             if (piPath) {
-              const resolved = realpathSync(piPath)
-              const pkgRoot = dirname(dirname(resolved))
-              const p = join(pkgRoot, 'CHANGELOG.md')
-              if (existsSync(p)) return p
+              const resolved = realpathSync(piPath);
+              const pkgRoot = dirname(dirname(resolved));
+              const p = join(pkgRoot, "CHANGELOG.md");
+              if (existsSync(p)) return p;
             }
           } catch {
             // ignore
@@ -595,449 +616,462 @@ export class PiAcpAgent implements ACPAgent {
 
           // 2) Fallback: ask npm where global modules live.
           try {
-            const npmRoot = spawnSync('npm', ['root', '-g'], { encoding: 'utf-8' })
-            const root = String(npmRoot.stdout ?? '').trim()
+            const npmRoot = spawnSync("npm", ["root", "-g"], { encoding: "utf-8" });
+            const root = String(npmRoot.stdout ?? "").trim();
             if (root) {
-              const p = join(root, '@earendil-works', 'pi-coding-agent', 'CHANGELOG.md')
-              if (existsSync(p)) return p
+              const p = join(root, "@earendil-works", "pi-coding-agent", "CHANGELOG.md");
+              if (existsSync(p)) return p;
             }
           } catch {
             // ignore
           }
 
-          return null
-        }
+          return null;
+        };
 
-        const changelogPath = findChangelog()
+        const changelogPath = findChangelog();
         if (!changelogPath) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: "Changelog not found (couldn't locate pi installation)." }
-            }
-          })
-          return { stopReason: 'end_turn' }
+              sessionUpdate: "agent_message_chunk",
+              content: {
+                type: "text",
+                text: "Changelog not found (couldn't locate pi installation).",
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
-        let text = ''
+        let text = "";
         try {
-          text = readFileSync(changelogPath, 'utf-8')
+          text = readFileSync(changelogPath, "utf-8");
         } catch (e: any) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: `Failed to read changelog: ${String(e?.message ?? e)}` }
-            }
-          })
-          return { stopReason: 'end_turn' }
+              sessionUpdate: "agent_message_chunk",
+              content: {
+                type: "text",
+                text: `Failed to read changelog: ${String(e?.message ?? e)}`,
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
         // Keep it reasonably sized in chat.
-        const maxChars = 20_000
-        if (text.length > maxChars) text = text.slice(0, maxChars) + '\n\n...(truncated)...'
+        const maxChars = 20_000;
+        if (text.length > maxChars) text = text.slice(0, maxChars) + "\n\n...(truncated)...";
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text }
-          }
-        })
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
 
-      if (cmd === 'export') {
+      if (cmd === "export") {
         // For now we always export into the session cwd and do not accept a user-provided path.
         // IMPORTANT: pi's export_html reads the session JSONL file. If it doesn't exist yet
         // (no messages) or is empty, pi throws and RPC mode emits an uncorrelated parse error
         // (no id), which would otherwise hang our request. So we guard here.
-        const state = (await session.proc.getState()) as any
-        const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
-        const messageCount = typeof state?.messageCount === 'number' ? state.messageCount : 0
+        const state = (await session.proc.getState()) as any;
+        const sessionFile = typeof state?.sessionFile === "string" ? state.sessionFile : null;
+        const messageCount = typeof state?.messageCount === "number" ? state.messageCount : 0;
 
         if (!sessionFile || messageCount === 0 || !existsSync(sessionFile)) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: 'Nothing to export yet (no session messages). Send a prompt first.'
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: "Nothing to export yet (no session messages). Send a prompt first.",
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
         try {
-          const raw = readFileSync(sessionFile, 'utf-8')
+          const raw = readFileSync(sessionFile, "utf-8");
           if (raw.trim().length === 0) {
             await this.conn.sessionUpdate({
               sessionId: session.sessionId,
               update: {
-                sessionUpdate: 'agent_message_chunk',
+                sessionUpdate: "agent_message_chunk",
                 content: {
-                  type: 'text',
-                  text: 'Nothing to export yet (empty session file). Send a prompt first.'
-                }
-              }
-            })
-            return { stopReason: 'end_turn' }
+                  type: "text",
+                  text: "Nothing to export yet (empty session file). Send a prompt first.",
+                },
+              },
+            });
+            return { stopReason: "end_turn" };
           }
         } catch {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: "Couldn't read session file for export. Try sending a prompt first."
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: "Couldn't read session file for export. Try sending a prompt first.",
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
-        const safeSessionId = session.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
-        const outputPath = join(session.cwd, `pi-session-${safeSessionId}.html`)
+        const safeSessionId = session.sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const outputPath = join(session.cwd, `pi-session-${safeSessionId}.html`);
 
-        let resultPath = ''
+        let resultPath = "";
         try {
-          const result = await session.proc.exportHtml(outputPath)
-          resultPath = result.path
+          const result = await session.proc.exportHtml(outputPath);
+          resultPath = result.path;
         } catch (e: any) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: `Export failed: ${String(e?.message ?? e)}`
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: `Export failed: ${String(e?.message ?? e)}`,
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
         if (!resultPath) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
+              sessionUpdate: "agent_message_chunk",
               content: {
-                type: 'text',
-                text: 'Export failed: no output path returned by pi.'
-              }
-            }
-          })
-          return { stopReason: 'end_turn' }
+                type: "text",
+                text: "Export failed: no output path returned by pi.",
+              },
+            },
+          });
+          return { stopReason: "end_turn" };
         }
 
-        const uri = `file://${resultPath}`
+        const uri = `file://${resultPath}`;
 
         // Emit a short prefix + a resource link. Many clients concatenate chunks into a single
         // assistant message, so this avoids the "link + duplicate plain text" look.
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
+            sessionUpdate: "agent_message_chunk",
             content: {
-              type: 'text',
-              text: 'Session exported: '
-            }
-          }
-        })
+              type: "text",
+              text: "Session exported: ",
+            },
+          },
+        });
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
+            sessionUpdate: "agent_message_chunk",
             content: {
-              type: 'resource_link',
+              type: "resource_link",
               name: `pi-session-${safeSessionId}.html`,
               uri,
-              mimeType: 'text/html',
-              title: 'Session exported'
-            }
-          }
-        })
+              mimeType: "text/html",
+              title: "Session exported",
+            },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
 
-      if (cmd === 'autocompact') {
-        const mode = (args[0] ?? 'toggle').toLowerCase()
-        let enabled: boolean | null = null
-        if (mode === 'on' || mode === 'true' || mode === 'enable' || mode === 'enabled') enabled = true
-        else if (mode === 'off' || mode === 'false' || mode === 'disable' || mode === 'disabled') enabled = false
+      if (cmd === "autocompact") {
+        const mode = (args[0] ?? "toggle").toLowerCase();
+        let enabled: boolean | null = null;
+        if (mode === "on" || mode === "true" || mode === "enable" || mode === "enabled")
+          enabled = true;
+        else if (mode === "off" || mode === "false" || mode === "disable" || mode === "disabled")
+          enabled = false;
 
         if (enabled === null) {
           // toggle: read current state and invert.
-          const state = (await session.proc.getState()) as any
-          const current = Boolean(state?.autoCompactionEnabled)
-          enabled = !current
+          const state = (await session.proc.getState()) as any;
+          const current = Boolean(state?.autoCompactionEnabled);
+          enabled = !current;
         }
 
-        await session.proc.setAutoCompaction(enabled)
+        await session.proc.setAutoCompaction(enabled);
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'agent_message_chunk',
+            sessionUpdate: "agent_message_chunk",
             content: {
-              type: 'text',
-              text: `Auto-compaction ${enabled ? 'enabled' : 'disabled'}.`
-            }
-          }
-        })
+              type: "text",
+              text: `Auto-compaction ${enabled ? "enabled" : "disabled"}.`,
+            },
+          },
+        });
 
-        return { stopReason: 'end_turn' }
+        return { stopReason: "end_turn" };
       }
     }
 
-    const result = await session.prompt(message, images)
+    const result = await session.prompt(message, images);
 
-    debugLog('agent.prompt.session_result', {
+    debugLog("agent.prompt.session_result", {
       sessionId: params.sessionId,
-      result
-    })
+      result,
+    });
 
     // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
     // unless we know this was a cancellation.
     const stopReason: StopReason =
-      result === 'error' ? (session.wasCancelRequested() ? 'cancelled' : 'end_turn') : result
+      result === "error" ? (session.wasCancelRequested() ? "cancelled" : "end_turn") : result;
 
-    debugLog('agent.prompt.return', {
+    debugLog("agent.prompt.return", {
       sessionId: params.sessionId,
       stopReason,
-      rawResult: result
-    })
+      rawResult: result,
+    });
 
-    return { stopReason }
+    return { stopReason };
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    const session = this.sessions.get(params.sessionId)
-    await session.cancel()
+    const session = this.sessions.get(params.sessionId);
+    await session.cancel();
   }
 
   async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
     // ACP: filter by cwd if provided.
     // Zed currently sends `{}` (no cwd), so we default to the last session cwd to
     // emulate pi's `/resume` picker (project-scoped).
-    const all = listPiSessions()
+    const all = listPiSessions();
 
-    const effectiveCwd = (params as any).cwd ?? this.lastSessionCwd
-    const filtered = effectiveCwd ? all.filter(s => s.cwd === effectiveCwd) : all
+    const effectiveCwd = (params as any).cwd ?? this.lastSessionCwd;
+    const filtered = effectiveCwd ? all.filter((s) => s.cwd === effectiveCwd) : all;
 
     // Cursor-based pagination (opaque cursor). For MVP, we use a simple numeric offset.
     // If cursor is invalid, treat as 0.
-    const offset = params.cursor ? Number.parseInt(params.cursor, 10) : 0
-    const start = Number.isFinite(offset) && offset > 0 ? offset : 0
+    const offset = params.cursor ? Number.parseInt(params.cursor, 10) : 0;
+    const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
 
-    const PAGE_SIZE = 50
-    const page = filtered.slice(start, start + PAGE_SIZE)
+    const PAGE_SIZE = 50;
+    const page = filtered.slice(start, start + PAGE_SIZE);
 
-    const sessions: SessionInfo[] = page.map(s => ({
+    const sessions: SessionInfo[] = page.map((s) => ({
       sessionId: s.sessionId,
       cwd: s.cwd,
       title: s.title,
-      updatedAt: s.updatedAt
-    }))
+      updatedAt: s.updatedAt,
+    }));
 
-    const nextCursor = start + PAGE_SIZE < filtered.length ? String(start + PAGE_SIZE) : null
+    const nextCursor = start + PAGE_SIZE < filtered.length ? String(start + PAGE_SIZE) : null;
 
-    return { sessions, nextCursor, _meta: {} }
+    return { sessions, nextCursor, _meta: {} };
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
-    debugLog('agent.loadSession.enter', {
+    debugLog("agent.loadSession.enter", {
       sessionId: params.sessionId,
       cwd: params.cwd,
-      mcpServers: params.mcpServers?.length ?? 0
-    })
+      mcpServers: params.mcpServers?.length ?? 0,
+    });
 
     if (!isAbsolute(params.cwd)) {
-      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
+      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
     }
 
     // If the client is re-loading a session that is already active, tear down the existing
     // pi subprocess so we can start fresh and re-advertise commands reliably.
     // (Some clients may call session/load when restoring from history.)
-    this.sessions.close(params.sessionId)
+    this.sessions.close(params.sessionId);
 
-    this.lastSessionCwd = params.cwd
+    this.lastSessionCwd = params.cwd;
 
     // MVP: ignore mcpServers.
     // Prefer ACP-created mapping first (fast path), otherwise scan pi sessions dir.
-    const stored = this.store.get(params.sessionId)
-    const storedSessionFile = stored?.sessionFile
-    const storedExists = typeof storedSessionFile === 'string' && existsSync(storedSessionFile)
-    const scannedSessionFile = storedExists ? null : findPiSessionFile(params.sessionId)
-    const sessionFile = storedExists ? storedSessionFile : scannedSessionFile
+    const stored = this.store.get(params.sessionId);
+    const storedSessionFile = stored?.sessionFile;
+    const storedExists = typeof storedSessionFile === "string" && existsSync(storedSessionFile);
+    const scannedSessionFile = storedExists ? null : findPiSessionFile(params.sessionId);
+    const sessionFile = storedExists ? storedSessionFile : scannedSessionFile;
 
-    debugLog('agent.loadSession.session_file', {
+    debugLog("agent.loadSession.session_file", {
       sessionId: params.sessionId,
       storedSessionFile: storedSessionFile ?? null,
       storedExists,
       scannedSessionFile: scannedSessionFile ?? null,
       resolvedSessionFile: sessionFile ?? null,
-      usedStored: storedExists
-    })
+      usedStored: storedExists,
+    });
 
     if (!sessionFile) {
-      throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
+      throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`);
     }
 
     // Spawn pi and point it directly at the session file.
-    let proc: PiRpcProcess
+    let proc: PiRpcProcess;
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
         sessionPath: sessionFile,
-        piCommand: process.env.PI_ACP_PI_COMMAND
-      })
+        piCommand: process.env.PI_ACP_PI_COMMAND,
+      });
     } catch (e: any) {
-      if (e?.name === 'PiRpcSpawnError') {
-        throw RequestError.internalError({ code: e?.code }, String(e?.message ?? e))
+      if (e?.name === "PiRpcSpawnError") {
+        throw RequestError.internalError({ code: e?.code }, String(e?.message ?? e));
       }
-      throw e
+      throw e;
     }
 
-    const fileCommands = loadSlashCommands(params.cwd)
-    const enableSkillCommands = getEnableSkillCommands(params.cwd)
+    const fileCommands = loadSlashCommands(params.cwd);
+    const enableSkillCommands = getEnableSkillCommands(params.cwd);
 
     const session = this.sessions.getOrCreate(params.sessionId, {
       cwd: params.cwd,
       mcpServers: params.mcpServers,
       conn: this.conn,
       proc,
-      fileCommands
-    })
+      fileCommands,
+    });
 
     // Policy: within a single ACP connection (one Zed window), keep only one live pi subprocess.
     // (Tests sometimes stub out `this.sessions`, so guard the call.)
-    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
+    (this.sessions as any).closeAllExcept?.(session.sessionId);
 
     // (Optional) ensure mapping stays fresh.
     this.store.upsert({
       sessionId: params.sessionId,
       cwd: params.cwd,
-      sessionFile
-    })
+      sessionFile,
+    });
 
     // Replay full conversation history.
-    const data = (await proc.getMessages()) as any
-    const messages = Array.isArray(data?.messages) ? data.messages : []
+    const data = (await proc.getMessages()) as any;
+    const messages = Array.isArray(data?.messages) ? data.messages : [];
 
-    debugLog('agent.loadSession.replay.begin', {
+    debugLog("agent.loadSession.replay.begin", {
       sessionId: params.sessionId,
-      messageCount: messages.length
-    })
+      messageCount: messages.length,
+    });
 
     for (const m of messages) {
-      const role = String(m?.role ?? '')
+      const role = String(m?.role ?? "");
 
-      if (role === 'user') {
-        const text = normalizePiMessageText(m?.content)
+      if (role === "user") {
+        const text = normalizePiMessageText(m?.content);
         if (text) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'user_message_chunk',
-              content: { type: 'text', text }
-            }
-          })
+              sessionUpdate: "user_message_chunk",
+              content: { type: "text", text },
+            },
+          });
         }
       }
 
-      if (role === 'assistant') {
-        const text = normalizePiAssistantText(m?.content)
+      if (role === "assistant") {
+        const text = normalizePiAssistantText(m?.content);
         if (text) {
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text }
-            }
-          })
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text },
+            },
+          });
         }
       }
 
-      if (role === 'toolResult') {
-        const toolName = String((m as any)?.toolName ?? 'tool')
-        const toolCallId = String((m as any)?.toolCallId ?? randomUUID())
-        const isError = Boolean((m as any)?.isError)
+      if (role === "toolResult") {
+        const toolName = String((m as any)?.toolName ?? "tool");
+        const toolCallId = String((m as any)?.toolCallId ?? randomUUID());
+        const isError = Boolean((m as any)?.isError);
 
         // Create a synthetic ACP tool call to render historic tool usage.
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'tool_call',
+            sessionUpdate: "tool_call",
             toolCallId,
             title: toolName,
-            kind: toolName === 'read' ? 'read' : toolName === 'write' || toolName === 'edit' ? 'edit' : 'other',
-            status: 'completed',
+            kind:
+              toolName === "read"
+                ? "read"
+                : toolName === "write" || toolName === "edit"
+                  ? "edit"
+                  : "other",
+            status: "completed",
             rawInput: null,
-            rawOutput: m
-          }
-        })
+            rawOutput: m,
+          },
+        });
 
-        const text = toolResultToText(m)
+        const text = toolResultToText(m);
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'tool_call_update',
+            sessionUpdate: "tool_call_update",
             toolCallId,
-            status: isError ? 'failed' : 'completed',
-            content: text ? [{ type: 'content', content: { type: 'text', text } }] : null,
-            rawOutput: m
-          }
-        })
+            status: isError ? "failed" : "completed",
+            content: text ? [{ type: "content", content: { type: "text", text } }] : null,
+            rawOutput: m,
+          },
+        });
       }
     }
 
-    const models = await getModelState(proc, params.cwd)
-    const thinking = await getThinkingState(proc)
+    const models = await getModelState(proc, params.cwd);
+    const thinking = await getThinkingState(proc);
 
     const response = {
       models,
       modes: thinking,
       _meta: {
         piAcp: {
-          startupInfo: null
-        }
-      }
-    }
+          startupInfo: null,
+        },
+      },
+    };
 
-    debugLog('agent.loadSession.return', {
+    debugLog("agent.loadSession.return", {
       sessionId: params.sessionId,
       messageCount: messages.length,
       hasModels: Boolean(models),
-      currentModeId: thinking.currentModeId
-    })
+      currentModeId: thinking.currentModeId,
+    });
 
     // Advertise slash commands after the response so the client knows the session exists.
     setTimeout(() => {
       void (async () => {
         try {
-          const pi = (await proc.getCommands()) as any
+          const pi = (await proc.getCommands()) as any;
           const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
             enableSkillCommands,
-            includeExtensionCommands: false
-          })
+            includeExtensionCommands: false,
+          });
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
-              sessionUpdate: 'available_commands_update',
-              availableCommands: mergeCommands(commands, builtinAvailableCommands())
-            }
-          })
-          return
+              sessionUpdate: "available_commands_update",
+              availableCommands: mergeCommands(commands, builtinAvailableCommands()),
+            },
+          });
+          return;
         } catch {
           // fall back
         }
@@ -1045,234 +1079,242 @@ export class PiAcpAgent implements ACPAgent {
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
-            sessionUpdate: 'available_commands_update',
-            availableCommands: mergeCommands(toAvailableCommands(fileCommands), builtinAvailableCommands())
-          }
-        })
-      })()
-    }, 0)
+            sessionUpdate: "available_commands_update",
+            availableCommands: mergeCommands(
+              toAvailableCommands(fileCommands),
+              builtinAvailableCommands(),
+            ),
+          },
+        });
+      })();
+    }, 0);
 
-    return response
+    return response;
   }
 
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
-    const session = this.sessions.get(params.sessionId)
+    const session = this.sessions.get(params.sessionId);
 
     // Accept either:
     //  - "provider/model" (preferred, matches how we advertise)
     //  - "model" (fallback, we try to resolve via available models)
-    let provider: string | null = null
-    let modelId: string | null = null
+    let provider: string | null = null;
+    let modelId: string | null = null;
 
-    if (params.modelId.includes('/')) {
-      const [p, ...rest] = params.modelId.split('/')
-      provider = p
-      modelId = rest.join('/')
+    if (params.modelId.includes("/")) {
+      const [p, ...rest] = params.modelId.split("/");
+      provider = p;
+      modelId = rest.join("/");
     } else {
-      modelId = params.modelId
+      modelId = params.modelId;
     }
 
     if (!provider) {
-      const data = (await session.proc.getAvailableModels()) as any
-      const models: any[] = Array.isArray(data?.models) ? data.models : []
-      const found = models.find(m => String(m?.id) === modelId)
+      const data = (await session.proc.getAvailableModels()) as any;
+      const models: any[] = Array.isArray(data?.models) ? data.models : [];
+      const found = models.find((m) => String(m?.id) === modelId);
       if (found) {
-        provider = String(found.provider)
-        modelId = String(found.id)
+        provider = String(found.provider);
+        modelId = String(found.id);
       }
     }
 
     if (!provider || !modelId) {
-      throw RequestError.invalidParams(`Unknown modelId: ${params.modelId}`)
+      throw RequestError.invalidParams(`Unknown modelId: ${params.modelId}`);
     }
 
-    await session.proc.setModel(provider, modelId)
+    await session.proc.setModel(provider, modelId);
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-    const session = this.sessions.get(params.sessionId)
+    const session = this.sessions.get(params.sessionId);
 
-    const mode = String(params.modeId)
+    const mode = String(params.modeId);
     if (!isThinkingLevel(mode)) {
-      throw RequestError.invalidParams(`Unknown modeId: ${mode}`)
+      throw RequestError.invalidParams(`Unknown modeId: ${mode}`);
     }
 
-    await session.proc.setThinkingLevel(mode)
+    await session.proc.setThinkingLevel(mode);
 
     // Let the client know the current mode changed (keeps the dropdown in sync).
     void this.conn.sessionUpdate({
       sessionId: session.sessionId,
       update: {
-        sessionUpdate: 'current_mode_update',
-        currentModeId: mode
-      }
-    })
+        sessionUpdate: "current_mode_update",
+        currentModeId: mode,
+      },
+    });
 
-    return {}
+    return {};
   }
 }
 
 function isThinkingLevel(x: string): x is ThinkingLevel {
-  return x === 'off' || x === 'minimal' || x === 'low' || x === 'medium' || x === 'high' || x === 'xhigh'
+  return (
+    x === "off" || x === "minimal" || x === "low" || x === "medium" || x === "high" || x === "xhigh"
+  );
 }
 
 async function getThinkingState(
   proc: PiRpcProcess,
-  pre?: { state?: any | null }
+  pre?: { state?: any | null },
 ): Promise<{
   availableModes: Array<{
-    id: string
-    name: string
-    description?: string | null
-  }>
-  currentModeId: string
+    id: string;
+    name: string;
+    description?: string | null;
+  }>;
+  currentModeId: string;
 }> {
   // Ask pi for current thinking level.
-  let current: ThinkingLevel = 'medium'
+  let current: ThinkingLevel = "medium";
 
   const state =
     pre?.state ??
     (await (async () => {
       try {
-        return (await proc.getState()) as any
+        return (await proc.getState()) as any;
       } catch {
-        return null
+        return null;
       }
-    })())
+    })());
 
-  const tl = typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : null
-  if (tl && isThinkingLevel(tl)) current = tl
+  const tl = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
+  if (tl && isThinkingLevel(tl)) current = tl;
 
-  const available: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+  const available: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
   return {
     currentModeId: current,
-    availableModes: available.map(id => ({
+    availableModes: available.map((id) => ({
       id,
       name: `Thinking: ${id}`,
-      description: null
-    }))
-  }
+      description: null,
+    })),
+  };
 }
 
 function stripThinkingSuffix(pattern: string): string {
-  const colon = pattern.lastIndexOf(':')
-  if (colon === -1) return pattern
+  const colon = pattern.lastIndexOf(":");
+  if (colon === -1) return pattern;
 
-  const suffix = pattern.slice(colon + 1)
-  return isThinkingLevel(suffix) ? pattern.slice(0, colon) : pattern
+  const suffix = pattern.slice(colon + 1);
+  return isThinkingLevel(suffix) ? pattern.slice(0, colon) : pattern;
 }
 
 function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i')
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped.replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
 }
 
-function matchesEnabledModel(model: { provider: string; id: string; name?: string }, pattern: string): boolean {
-  const normalized = stripThinkingSuffix(pattern).trim()
-  if (!normalized) return false
+function matchesEnabledModel(
+  model: { provider: string; id: string; name?: string },
+  pattern: string,
+): boolean {
+  const normalized = stripThinkingSuffix(pattern).trim();
+  if (!normalized) return false;
 
-  const fullId = `${model.provider}/${model.id}`
-  const candidates = [fullId, model.id, model.name ?? '']
+  const fullId = `${model.provider}/${model.id}`;
+  const candidates = [fullId, model.id, model.name ?? ""];
 
-  if (normalized.includes('*') || normalized.includes('?')) {
-    const re = globToRegExp(normalized)
-    return candidates.some(candidate => re.test(candidate))
+  if (normalized.includes("*") || normalized.includes("?")) {
+    const re = globToRegExp(normalized);
+    return candidates.some((candidate) => re.test(candidate));
   }
 
-  return candidates.some(candidate => candidate.toLowerCase() === normalized.toLowerCase())
+  return candidates.some((candidate) => candidate.toLowerCase() === normalized.toLowerCase());
 }
 
 function filterEnabledModels(models: any[], cwd: string): any[] {
-  const enabledModels = getEnabledModels(cwd)
-  if (!enabledModels) return models
+  const enabledModels = getEnabledModels(cwd);
+  if (!enabledModels) return models;
 
-  const filtered = models.filter(model =>
-    enabledModels.some(pattern =>
+  const filtered = models.filter((model) =>
+    enabledModels.some((pattern) =>
       matchesEnabledModel(
         {
-          provider: String(model?.provider ?? '').trim(),
-          id: String(model?.id ?? '').trim(),
-          name: typeof model?.name === 'string' ? model.name : undefined
+          provider: String(model?.provider ?? "").trim(),
+          id: String(model?.id ?? "").trim(),
+          name: typeof model?.name === "string" ? model.name : undefined,
         },
-        pattern
-      )
-    )
-  )
+        pattern,
+      ),
+    ),
+  );
 
-  return filtered.length ? filtered : models
+  return filtered.length ? filtered : models;
 }
 
 async function getModelState(
   proc: PiRpcProcess,
   cwd: string,
-  pre?: { state?: any | null; availableModels?: any | null }
+  pre?: { state?: any | null; availableModels?: any | null },
 ): Promise<{
-  availableModels: ModelInfo[]
-  currentModelId: string
+  availableModels: ModelInfo[];
+  currentModelId: string;
 } | null> {
   // Ask pi for available models.
-  let availableModels: ModelInfo[] = []
+  let availableModels: ModelInfo[] = [];
 
   const data =
     pre?.availableModels ??
     (await (async () => {
       try {
-        return (await proc.getAvailableModels()) as any
+        return (await proc.getAvailableModels()) as any;
       } catch {
-        return null
+        return null;
       }
-    })())
+    })());
 
-  const models: any[] = filterEnabledModels(Array.isArray(data?.models) ? data.models : [], cwd)
+  const models: any[] = filterEnabledModels(Array.isArray(data?.models) ? data.models : [], cwd);
   availableModels = models
-    .map(m => {
-      const provider = String(m?.provider ?? '').trim()
-      const id = String(m?.id ?? '').trim()
-      if (!provider || !id) return null
+    .map((m) => {
+      const provider = String(m?.provider ?? "").trim();
+      const id = String(m?.id ?? "").trim();
+      if (!provider || !id) return null;
 
-      const name = String(m?.name ?? id)
+      const name = String(m?.name ?? id);
       return {
         modelId: `${provider}/${id}`,
         name: `${provider}/${name}`,
-        description: null
-      } satisfies ModelInfo
+        description: null,
+      } satisfies ModelInfo;
     })
-    .filter(Boolean) as ModelInfo[]
+    .filter(Boolean) as ModelInfo[];
 
   // Ask pi what model is currently active.
-  let currentModelId: string | null = null
+  let currentModelId: string | null = null;
 
   const state =
     pre?.state ??
     (await (async () => {
       try {
-        return (await proc.getState()) as any
+        return (await proc.getState()) as any;
       } catch {
-        return null
+        return null;
       }
-    })())
+    })());
 
-  const model = state?.model
-  if (model && typeof model === 'object') {
-    const provider = String((model as any).provider ?? '').trim()
-    const id = String((model as any).id ?? '').trim()
-    if (provider && id) currentModelId = `${provider}/${id}`
+  const model = state?.model;
+  if (model && typeof model === "object") {
+    const provider = String((model as any).provider ?? "").trim();
+    const id = String((model as any).id ?? "").trim();
+    if (provider && id) currentModelId = `${provider}/${id}`;
   }
 
-  if (!availableModels.length && !currentModelId) return null
+  if (!availableModels.length && !currentModelId) return null;
 
   // Fallback if current model is unknown: use first in list.
-  if (!currentModelId) currentModelId = availableModels[0]?.modelId ?? 'default'
+  if (!currentModelId) currentModelId = availableModels[0]?.modelId ?? "default";
 
   return {
     availableModels,
-    currentModelId
-  }
+    currentModelId,
+  };
 }
 
 function isSemver(v: string): boolean {
-  return /^\d+\.\d+\.\d+(?:[-+].+)?$/.test(v)
+  return /^\d+\.\d+\.\d+(?:[-+].+)?$/.test(v);
 }
 
 function compareSemver(a: string, b: string): number {
@@ -1280,101 +1322,99 @@ function compareSemver(a: string, b: string): number {
   const pa = a
     .split(/[.-]/)
     .slice(0, 3)
-    .map(n => Number(n))
+    .map((n) => Number(n));
   const pb = b
     .split(/[.-]/)
     .slice(0, 3)
-    .map(n => Number(n))
+    .map((n) => Number(n));
   for (let i = 0; i < 3; i++) {
-    const da = pa[i] ?? 0
-    const db = pb[i] ?? 0
-    if (da > db) return 1
-    if (da < db) return -1
+    const da = pa[i] ?? 0;
+    const db = pb[i] ?? 0;
+    if (da > db) return 1;
+    if (da < db) return -1;
   }
-  return 0
+  return 0;
 }
 
 function buildUpdateNotice(): string | null {
   // Best-effort update check against npm registry.
   // Important: keep it fast to not slow down session/new.
   try {
-    const piVersion = spawnSync('pi', ['--version'], { encoding: 'utf-8' })
-    const installed = (String(piVersion.stdout ?? '').trim() || String(piVersion.stderr ?? '').trim()).replace(
-      /^v/i,
-      ''
-    )
+    const piVersion = spawnSync("pi", ["--version"], { encoding: "utf-8" });
+    const installed = (
+      String(piVersion.stdout ?? "").trim() || String(piVersion.stderr ?? "").trim()
+    ).replace(/^v/i, "");
 
-    if (!installed || !isSemver(installed)) return null
+    if (!installed || !isSemver(installed)) return null;
 
-    const latestRes = spawnSync('npm', ['view', '@earendil-works/pi-coding-agent', 'version'], {
-      encoding: 'utf-8',
-      timeout: 800
-    })
-    const latest = String(latestRes.stdout ?? '')
+    const latestRes = spawnSync("npm", ["view", "@earendil-works/pi-coding-agent", "version"], {
+      encoding: "utf-8",
+      timeout: 800,
+    });
+    const latest = String(latestRes.stdout ?? "")
       .trim()
-      .replace(/^v/i, '')
+      .replace(/^v/i, "");
 
-    if (!latest || !isSemver(latest)) return null
-    if (compareSemver(latest, installed) <= 0) return null
+    if (!latest || !isSemver(latest)) return null;
+    if (compareSemver(latest, installed) <= 0) return null;
 
-    return `New version available: v${latest} (installed v${installed}). Run: \`npm i -g @earendil-works/pi-coding-agent\``
+    return `New version available: v${latest} (installed v${installed}). Run: \`npm i -g @earendil-works/pi-coding-agent\``;
   } catch {
-    return null
+    return null;
   }
 }
 
 function buildStartupInfo(opts: {
-  cwd: string
-  fileCommands: ReturnType<typeof loadSlashCommands>
-  updateNotice: string | null
+  cwd: string;
+  fileCommands: ReturnType<typeof loadSlashCommands>;
+  updateNotice: string | null;
 }): string {
-  void opts.fileCommands
+  void opts.fileCommands;
 
-  const md: string[] = []
+  const md: string[] = [];
 
   // pi version header
   try {
-    const piVersion = spawnSync('pi', ['--version'], { encoding: 'utf-8' })
-    const installed = (String(piVersion.stdout ?? '').trim() || String(piVersion.stderr ?? '').trim()).replace(
-      /^v/i,
-      ''
-    )
+    const piVersion = spawnSync("pi", ["--version"], { encoding: "utf-8" });
+    const installed = (
+      String(piVersion.stdout ?? "").trim() || String(piVersion.stderr ?? "").trim()
+    ).replace(/^v/i, "");
     if (installed) {
-      md.push(`pi v${installed}`)
-      md.push('---')
-      md.push('')
+      md.push(`pi v${installed}`);
+      md.push("---");
+      md.push("");
     }
   } catch {
     // ignore
   }
 
   const addSection = (title: string, items: string[]) => {
-    const cleaned = items.map(s => s.trim()).filter(Boolean)
-    if (!cleaned.length) return
+    const cleaned = items.map((s) => s.trim()).filter(Boolean);
+    if (!cleaned.length) return;
 
-    md.push(`## ${title}`)
-    for (const item of cleaned) md.push(`- ${item}`)
-    md.push('')
-  }
+    md.push(`## ${title}`);
+    for (const item of cleaned) md.push(`- ${item}`);
+    md.push("");
+  };
 
   // Context
-  const contextItems: string[] = []
-  const contextPath = join(opts.cwd, 'AGENTS.md')
-  if (existsSync(contextPath)) contextItems.push(contextPath)
-  addSection('Context', contextItems)
+  const contextItems: string[] = [];
+  const contextPath = join(opts.cwd, "AGENTS.md");
+  if (existsSync(contextPath)) contextItems.push(contextPath);
+  addSection("Context", contextItems);
 
   // Skills
-  const skillsItems: string[] = []
+  const skillsItems: string[] = [];
 
   const pushSkillFromRoot = (root: string) => {
     try {
       // Direct .md files in root
       for (const e of readdirSync(root)) {
-        const p = join(root, e)
+        const p = join(root, e);
         try {
-          const st = statSync(p)
-          if (st.isFile() && e.toLowerCase().endsWith('.md')) {
-            skillsItems.push(p)
+          const st = statSync(p);
+          if (st.isFile() && e.toLowerCase().endsWith(".md")) {
+            skillsItems.push(p);
           }
         } catch {
           // ignore
@@ -1382,122 +1422,122 @@ function buildStartupInfo(opts: {
       }
 
       // Recursive SKILL.md under subdirectories
-      const stack: string[] = [root]
+      const stack: string[] = [root];
       while (stack.length) {
-        const dir = stack.pop()!
-        let entries: string[] = []
+        const dir = stack.pop()!;
+        let entries: string[] = [];
         try {
-          entries = readdirSync(dir)
+          entries = readdirSync(dir);
         } catch {
-          continue
+          continue;
         }
 
         for (const name of entries) {
           // Skip obvious noise
-          if (name === 'node_modules' || name === '.git') continue
-          const p = join(dir, name)
-          let st
+          if (name === "node_modules" || name === ".git") continue;
+          const p = join(dir, name);
+          let st;
           try {
-            st = statSync(p)
+            st = statSync(p);
           } catch {
-            continue
+            continue;
           }
           if (st.isDirectory()) {
-            stack.push(p)
-          } else if (st.isFile() && name === 'SKILL.md') {
-            skillsItems.push(p)
+            stack.push(p);
+          } else if (st.isFile() && name === "SKILL.md") {
+            skillsItems.push(p);
           }
         }
       }
     } catch {
       // ignore
     }
-  }
+  };
 
   // Global skills
   // Use getAgentDir() so this respects PI_CODING_AGENT_DIR overrides.
-  const globalSkillsDir = join(getAgentDir(), 'skills')
-  pushSkillFromRoot(globalSkillsDir)
+  const globalSkillsDir = join(getAgentDir(), "skills");
+  pushSkillFromRoot(globalSkillsDir);
 
   // Also support ~/.agents/skills (pi skill discovery)
-  const legacyAgentsSkillsDir = join(process.env.HOME ?? '', '.agents', 'skills')
-  pushSkillFromRoot(legacyAgentsSkillsDir)
+  const legacyAgentsSkillsDir = join(process.env.HOME ?? "", ".agents", "skills");
+  pushSkillFromRoot(legacyAgentsSkillsDir);
 
   // Project skills (.pi/skills)
-  const projectSkillsDir = join(opts.cwd, '.pi', 'skills')
-  pushSkillFromRoot(projectSkillsDir)
+  const projectSkillsDir = join(opts.cwd, ".pi", "skills");
+  pushSkillFromRoot(projectSkillsDir);
 
-  addSection('Skills', skillsItems)
+  addSection("Skills", skillsItems);
 
   // Prompts
-  const promptsItems: string[] = []
-  const promptsDir = join(process.env.HOME ?? '', '.pi', 'agent', 'prompts')
+  const promptsItems: string[] = [];
+  const promptsDir = join(process.env.HOME ?? "", ".pi", "agent", "prompts");
   try {
-    const prompts = readdirSync(promptsDir).filter(f => f.endsWith('.md'))
-    for (const f of prompts) promptsItems.push(`/${basename(f, '.md')}`)
+    const prompts = readdirSync(promptsDir).filter((f) => f.endsWith(".md"));
+    for (const f of prompts) promptsItems.push(`/${basename(f, ".md")}`);
   } catch {
     // ignore
   }
-  addSection('Prompts', promptsItems)
+  addSection("Prompts", promptsItems);
 
   // Extensions
-  const extItems: string[] = []
-  const extDir = join(process.env.HOME ?? '', '.pi', 'agent', 'extensions')
+  const extItems: string[] = [];
+  const extDir = join(process.env.HOME ?? "", ".pi", "agent", "extensions");
   try {
-    const exts = readdirSync(extDir).filter(f => f.endsWith('.ts') || f.endsWith('.js'))
-    for (const f of exts) extItems.push(join(extDir, f))
+    const exts = readdirSync(extDir).filter((f) => f.endsWith(".ts") || f.endsWith(".js"));
+    for (const f of exts) extItems.push(join(extDir, f));
   } catch {
     // ignore
   }
 
   // Also show npm packages from pi settings (best-effort)
   try {
-    const settingsPath = join(process.env.HOME ?? '', '.pi', 'agent', 'settings.json')
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as any
-    const pkgs: string[] = Array.isArray(settings?.packages) ? settings.packages : []
+    const settingsPath = join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as any;
+    const pkgs: string[] = Array.isArray(settings?.packages) ? settings.packages : [];
     for (const pkg of pkgs) {
-      const s = String(pkg)
-      if (s.startsWith('npm:')) {
+      const s = String(pkg);
+      if (s.startsWith("npm:")) {
         // Render a two-line bullet structure using markdown indentation.
-        extItems.push(`${s}\n  - index.ts`)
+        extItems.push(`${s}\n  - index.ts`);
       } else {
-        extItems.push(s)
+        extItems.push(s);
       }
     }
   } catch {
     // ignore
   }
 
-  addSection('Extensions', extItems)
+  addSection("Extensions", extItems);
 
   if (opts.updateNotice) {
-    md.push('---')
-    md.push(opts.updateNotice)
-    md.push('')
+    md.push("---");
+    md.push(opts.updateNotice);
+    md.push("");
   }
 
   // Do NOT include themes (per request).
-  return md.join('\n').trim() + '\n'
+  return md.join("\n").trim() + "\n";
 }
 
 function readNearestPackageJson(metaUrl: string): {
-  name?: string
-  version?: string
+  name?: string;
+  version?: string;
 } {
   try {
-    let dir = dirname(fileURLToPath(metaUrl))
+    let dir = dirname(fileURLToPath(metaUrl));
 
     // Walk upwards a few levels to find the nearest package.json
     for (let i = 0; i < 6; i++) {
-      const p = join(dir, 'package.json')
+      const p = join(dir, "package.json");
       if (existsSync(p)) {
-        const json = JSON.parse(readFileSync(p, 'utf-8')) as any
-        return { name: json?.name, version: json?.version }
+        const json = JSON.parse(readFileSync(p, "utf-8")) as any;
+        return { name: json?.name, version: json?.version };
       }
-      dir = dirname(dir)
+      dir = dirname(dir);
     }
   } catch {
     // ignore
   }
-  return { name: 'pi-acp', version: '0.0.0' }
+  return { name: "pi-acp", version: "0.0.0" };
 }
