@@ -498,6 +498,17 @@ export class PiAcpSession {
           pendingTurn: Boolean(this.pendingTurn),
           inAgentLoop: this.inAgentLoop,
         });
+
+        if (!this.inAgentLoop && this.pendingTurn) {
+          void this.flushEmits().finally(() => {
+            this.pendingTurn?.resolve(this.cancelRequested ? "cancelled" : "end_turn");
+            this.pendingTurn = null;
+            this.emit({
+              sessionUpdate: "session_info_update",
+              _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } },
+            });
+          });
+        }
       })
       .catch((err) => {
         debugLog("session.startTurn.proc_prompt.rejected", {
@@ -888,7 +899,27 @@ export class PiAcpSession {
     const ui = (ev as any).ui ?? ev;
     const uiType = String((ev as any).method ?? ui?.type ?? "");
 
-    // Fire-and-forget / unsupported types: respond cancelled immediately so pi doesn't hang.
+    if (uiType === "notify") {
+      const message = typeof (ev as any).message === "string" ? (ev as any).message : "";
+      if (message) {
+        this.emit({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: message } satisfies ContentBlock,
+        });
+      }
+      return;
+    }
+
+    if (
+      uiType === "setStatus" ||
+      uiType === "setWidget" ||
+      uiType === "setTitle" ||
+      uiType === "set_editor_text"
+    ) {
+      return;
+    }
+
+    // Dialog types we cannot represent in ACP yet: unblock pi with the default cancelled value.
     if (uiType !== "select" && uiType !== "confirm") {
       this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
       return;
