@@ -1,5 +1,5 @@
 /**
- * Tests for the extension_ui_request → ACP requestPermission bridge.
+ * Tests for the extension_ui_request → ACP requestPermission / createElicitation bridge.
  *
  * Uses fakes for both PiRpcProcess and AgentSideConnection so no real
  * subprocess or network is needed.
@@ -43,9 +43,22 @@ function makeFakeProc() {
 
 type FakeProc = ReturnType<typeof makeFakeProc>;
 
-/** Fake conn that records requestPermission calls and returns a controlled response. */
-function makeFakeConn(permissionResponse: () => Promise<{ outcome: string; optionId?: string }>) {
+type ElicitationResponse =
+  | { action: "accept"; content?: Record<string, unknown> }
+  | { action: "decline" }
+  | { action: "cancel" };
+
+/**
+ * Fake conn that records requestPermission and elicitation calls.
+ * When `elicitationResponse` is omitted, `unstable_createElicitation` throws
+ * method-not-found (simulating a client that doesn't support elicitation).
+ */
+function makeFakeConn(
+  permissionResponse: () => Promise<{ outcome: string; optionId?: string }>,
+  elicitationResponse?: () => Promise<ElicitationResponse>,
+) {
   const permissionCalls: unknown[] = [];
+  const elicitationCalls: unknown[] = [];
   const sessionUpdates: unknown[] = [];
 
   return {
@@ -53,10 +66,18 @@ function makeFakeConn(permissionResponse: () => Promise<{ outcome: string; optio
       permissionCalls.push(params);
       return permissionResponse();
     },
+    async unstable_createElicitation(params: unknown) {
+      elicitationCalls.push(params);
+      if (!elicitationResponse) {
+        throw Object.assign(new Error("Method not found"), { code: -32601 });
+      }
+      return elicitationResponse();
+    },
     async sessionUpdate(params: unknown) {
       sessionUpdates.push(params);
     },
     permissionCalls,
+    elicitationCalls,
     sessionUpdates,
   };
 }
@@ -227,32 +248,118 @@ describe("extension_ui_request bridge", () => {
     assert.equal(call.options[1].name, "No");
   });
 
-  it("input: auto-cancelled immediately (not blocked)", async () => {
-    let permissionCalled = false;
+  it("input: uses createElicitation when client supports it and returns value on accept", async () => {
     const proc = makeFakeProc();
-    const conn = makeFakeConn(async () => {
-      permissionCalled = true;
-      return { outcome: "cancelled" };
-    });
+    const conn = makeFakeConn(
+      () => Promise.resolve({ outcome: "cancelled" }),
+      () => Promise.resolve({ action: "accept", content: { value: "hello world" } }),
+    );
     makeSession(proc, conn);
 
     proc.emit({
       type: "extension_ui_request",
       id: "req-6",
       method: "input",
-      ui: { type: "input", message: "Enter value" },
+      message: "Enter value",
+      ui: { type: "input" },
     });
 
-    // Auto-cancel happens synchronously (no permission call)
-    assert.equal(permissionCalled, false);
+    await new Promise((r) => setImmediate(r));
+
+    // No permission call — elicitation is used instead
+    assert.equal(conn.permissionCalls.length, 0);
+    assert.equal(conn.elicitationCalls.length, 1);
+
+    const call = conn.elicitationCalls[0] as any;
+    assert.equal(call.sessionId, "test-session");
+    assert.equal(call.mode, "form");
+    assert.equal(call.message, "Enter value");
+    assert.equal(call.requestedSchema.properties.value.type, "string");
+
     assert.equal(proc.uiResponses.length, 1);
     assert.deepEqual(proc.uiResponses[0], {
       requestId: "req-6",
+      response: { value: "hello world" },
+    });
+  });
+
+  it("input: maps decline elicitation response to cancelled", async () => {
+    const proc = makeFakeProc();
+    const conn = makeFakeConn(
+      () => Promise.resolve({ outcome: "cancelled" }),
+      () => Promise.resolve({ action: "decline" }),
+    );
+    makeSession(proc, conn);
+
+    proc.emit({
+      type: "extension_ui_request",
+      id: "req-6b",
+      method: "input",
+      message: "Enter value",
+      ui: { type: "input" },
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    assert.deepEqual(proc.uiResponses[0], {
+      requestId: "req-6b",
       response: { cancelled: true },
     });
   });
 
-  it("editor: auto-cancelled immediately", () => {
+  it("input: falls back to auto-cancel when client does not support elicitation", async () => {
+    const proc = makeFakeProc();
+    // No elicitationResponse → conn throws method-not-found
+    const conn = makeFakeConn(() => Promise.resolve({ outcome: "cancelled" }));
+    makeSession(proc, conn);
+
+    proc.emit({
+      type: "extension_ui_request",
+      id: "req-6c",
+      method: "input",
+      message: "Enter value",
+      ui: { type: "input" },
+    });
+
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(proc.uiResponses.length, 1);
+    assert.deepEqual(proc.uiResponses[0], {
+      requestId: "req-6c",
+      response: { cancelled: true },
+    });
+  });
+
+  it("input: session cancel unblocks pending elicitation as cancelled", async () => {
+    const proc = makeFakeProc();
+    const conn = makeFakeConn(
+      () => Promise.resolve({ outcome: "cancelled" }),
+      () => new Promise(() => {}), // never resolves on its own
+    );
+    const session = makeSession(proc, conn);
+
+    proc.emit({
+      type: "extension_ui_request",
+      id: "req-6d",
+      method: "input",
+      message: "Enter something",
+      ui: { type: "input" },
+    });
+
+    await new Promise((r) => setImmediate(r));
+    assert.equal(conn.elicitationCalls.length, 1);
+
+    await session.cancel();
+    await new Promise((r) => setImmediate(r));
+
+    assert.equal(proc.uiResponses.length, 1);
+    assert.deepEqual(proc.uiResponses[0], {
+      requestId: "req-6d",
+      response: { cancelled: true },
+    });
+  });
+
+  it("editor: auto-cancelled (ACP elicitation has no multiline string format)", () => {
     const proc = makeFakeProc();
     const conn = makeFakeConn(() => Promise.resolve({ outcome: "selected" }));
     makeSession(proc, conn);
@@ -269,8 +376,8 @@ describe("extension_ui_request bridge", () => {
       requestId: "req-7",
       response: { cancelled: true },
     });
-    // No permission call for unsupported types
     assert.equal(conn.permissionCalls.length, 0);
+    assert.equal(conn.elicitationCalls.length, 0);
   });
 
   it("select with empty options: auto-cancelled", () => {

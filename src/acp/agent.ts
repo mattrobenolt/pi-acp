@@ -10,6 +10,8 @@ import {
   type CloseSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type ListSessionsRequest,
   type ListSessionsResponse,
   type LoadSessionRequest,
@@ -18,7 +20,12 @@ import {
   type NewSessionRequest,
   type PromptRequest,
   type PromptResponse,
+  type ResumeSessionRequest,
+  type ResumeSessionResponse,
+  type SessionConfigOption,
   type SessionInfo,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
   type SetSessionModeRequest,
   type SetSessionModeResponse,
   type StopReason,
@@ -28,7 +35,7 @@ import { getAuthMethods } from "./auth.js";
 import { debugLog, SessionManager } from "./session.js";
 import { SessionStore } from "./session-store.js";
 import { PiRpcProcess } from "../pi-rpc/process.js";
-import { listPiSessions, findPiSessionFile } from "./pi-sessions.js";
+import { listPiSessions, findPiSessionFile, getPiSessionsDir } from "./pi-sessions.js";
 import { normalizePiAssistantText, normalizePiMessageText } from "./translate/pi-messages.js";
 import {
   toolResultToText,
@@ -49,13 +56,70 @@ import {
 import { toAvailableCommandsFromPiGetCommands } from "./pi-commands.js";
 import { mapPiRpcError, maybeAuthRequiredError } from "./auth-required.js";
 import { isAbsolute } from "node:path";
-import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import type { AvailableCommand } from "@agentclientprotocol/sdk";
 import { join, dirname, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export type SessionDocumentContext = {
+  focusedDocument: {
+    uri: string;
+    languageId?: string | null;
+    position?: { line: number; character: number } | null;
+    visibleRange?: unknown;
+  } | null;
+  openDocuments: Map<string, { languageId?: string | null; version?: number }>;
+};
+
+export function buildDocumentContextPrefix(
+  ctx: SessionDocumentContext | null,
+  message: string,
+  cwd: string,
+): string {
+  if (!ctx?.focusedDocument) return "";
+
+  const focused = ctx.focusedDocument;
+  const focusedPath = displayDocumentPath(focused.uri, cwd);
+  if (message.includes(focusedPath) || message.includes(basename(focusedPath))) return "";
+
+  const parts = [
+    `Focused file: ${focusedPath}${focused.languageId ? ` (${focused.languageId})` : ""}`,
+  ];
+  if (typeof focused.position?.line === "number")
+    parts.push(`Cursor: line ${focused.position.line + 1}`);
+
+  if (ctx.openDocuments.size <= 8) {
+    const others = [...ctx.openDocuments.keys()]
+      .filter((uri) => uri !== focused.uri)
+      .map((uri) => displayDocumentPath(uri, cwd));
+    if (others.length) parts.push(`Other open files: ${others.join(", ")}`);
+  }
+
+  return `<context>\n${parts.join("\n")}\n</context>\n\n`;
+}
+
+function displayDocumentPath(uri: string, cwd: string): string {
+  if (!uri.startsWith("file://")) return uri;
+  try {
+    const path = fileURLToPath(uri);
+    const prefix = cwd.endsWith("/") ? cwd : `${cwd}/`;
+    return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  } catch {
+    return uri;
+  }
+}
 
 function builtinAvailableCommands(): AvailableCommand[] {
   return [
@@ -153,6 +217,7 @@ export class PiAcpAgent implements ACPAgent {
   private readonly sessions = new SessionManager();
   private readonly store = new SessionStore();
   private readonly sessionAdditionalDirectories = new Map<string, string[]>();
+  private readonly sessionDocCtx = new Map<string, SessionDocumentContext>();
 
   // Tracks whether the connected client declared support for usage_update via
   // _meta["usage-update"] in InitializeRequest. Defaults to true (opt-out model):
@@ -232,6 +297,53 @@ export class PiAcpAgent implements ACPAgent {
     } catch {
       // Best-effort only.
     }
+  }
+
+  private async emitConfigOptionUpdate(sessionId: string, proc: PiRpcProcess): Promise<void> {
+    const state = await proc.getState().catch(() => null);
+    await this.conn.sessionUpdate({
+      sessionId,
+      update: {
+        sessionUpdate: "config_option_update",
+        configOptions: buildConfigOptions(state),
+      },
+    });
+  }
+
+  private async emitAvailableCommands(
+    sessionId: string,
+    proc: PiRpcProcess,
+    cwd: string,
+    fileCommands: ReturnType<typeof loadSlashCommands>,
+  ): Promise<void> {
+    try {
+      const pi = (await proc.getCommands()) as any;
+      const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
+        enableSkillCommands: getEnableSkillCommands(cwd),
+        includeExtensionCommands: getEnableExtensionCommands(cwd),
+      });
+      await this.conn.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "available_commands_update",
+          availableCommands: mergeCommands(commands, builtinAvailableCommands()),
+        },
+      });
+      return;
+    } catch {
+      // Fall back to file commands below.
+    }
+
+    await this.conn.sessionUpdate({
+      sessionId,
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: mergeCommands(
+          toAvailableCommands(fileCommands),
+          builtinAvailableCommands(),
+        ),
+      },
+    });
   }
 
   private async maybeSetInitialTitle(
@@ -452,6 +564,7 @@ export class PiAcpAgent implements ACPAgent {
       sessionId: session.sessionId,
       models,
       modes: thinking,
+      configOptions: buildConfigOptions(state),
       _meta: {
         piAcp: {
           ...metadata,
@@ -551,9 +664,15 @@ export class PiAcpAgent implements ACPAgent {
 
     const session = await this.ensureSession(params.sessionId);
 
-    const { message, images } = promptToPiMessage(params.prompt);
+    const { message: rawMessage, images } = promptToPiMessage(params.prompt);
+    const contextPrefix = buildDocumentContextPrefix(
+      this.sessionDocCtx.get(params.sessionId) ?? null,
+      rawMessage,
+      session.cwd,
+    );
+    const message = contextPrefix ? `${contextPrefix}${rawMessage}` : rawMessage;
 
-    await this.maybeSetInitialTitle(session, message);
+    await this.maybeSetInitialTitle(session, rawMessage);
 
     debugLog("agent.prompt.normalized", {
       sessionId: params.sessionId,
@@ -721,6 +840,7 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         await session.proc.setSteeringMode(modeRaw as "all" | "one-at-a-time");
+        await this.emitConfigOptionUpdate(session.sessionId, session.proc);
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -768,6 +888,7 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         await session.proc.setFollowUpMode(modeRaw as "all" | "one-at-a-time");
+        await this.emitConfigOptionUpdate(session.sessionId, session.proc);
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -999,6 +1120,7 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         await session.proc.setAutoCompaction(enabled);
+        await this.emitConfigOptionUpdate(session.sessionId, session.proc);
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -1050,6 +1172,7 @@ export class PiAcpAgent implements ACPAgent {
     this.sessions.close(params.sessionId);
     this.titledSessions.delete(params.sessionId);
     this.sessionAdditionalDirectories.delete(params.sessionId);
+    this.sessionDocCtx.delete(params.sessionId);
     return {};
   }
 
@@ -1093,6 +1216,154 @@ export class PiAcpAgent implements ACPAgent {
     const nextCursor = start + PAGE_SIZE < filtered.length ? String(start + PAGE_SIZE) : null;
 
     return { sessions, nextCursor, _meta: {} };
+  }
+
+  async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+    if (!isAbsolute(params.cwd)) {
+      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
+    }
+
+    this.sessions.close(params.sessionId);
+    const additionalDirectories =
+      normalizeAdditionalDirectories(
+        (params as { additionalDirectories?: unknown }).additionalDirectories,
+      ) ?? [];
+    this.lastSessionCwd = params.cwd;
+
+    const stored = this.store.get(params.sessionId);
+    const storedSessionFile = stored?.sessionFile;
+    const storedExists = typeof storedSessionFile === "string" && existsSync(storedSessionFile);
+    const sessionFile = storedExists ? storedSessionFile : findPiSessionFile(params.sessionId);
+    if (!sessionFile) throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`);
+
+    const proc = await PiRpcProcess.spawn({
+      cwd: params.cwd,
+      sessionPath: sessionFile,
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+    });
+
+    const fileCommands = loadSlashCommands(params.cwd);
+    const session = this.sessions.getOrCreate(params.sessionId, {
+      cwd: params.cwd,
+      mcpServers: params.mcpServers ?? [],
+      conn: this.conn,
+      proc,
+      fileCommands,
+    });
+    (this.sessions as any).closeAllExcept?.(session.sessionId);
+
+    this.sessionAdditionalDirectories.set(params.sessionId, additionalDirectories);
+    this.store.upsert({
+      sessionId: params.sessionId,
+      cwd: params.cwd,
+      sessionFile,
+      additionalDirectories,
+    });
+
+    const state = await proc.getState().catch(() => null);
+    const models = await getModelState(proc, params.cwd, { state });
+    const thinking = await getThinkingState(proc, { state });
+    const metadata = buildSessionMetadata({ state, models, sessionFile, additionalDirectories });
+
+    void this.conn.sessionUpdate({
+      sessionId: session.sessionId,
+      update: { sessionUpdate: "session_info_update", _meta: { piAcp: metadata } },
+    });
+    void this.maybeEmitUsageUpdate(session.sessionId, proc, state);
+
+    setTimeout(() => {
+      void this.emitAvailableCommands(session.sessionId, proc, params.cwd, fileCommands);
+    }, 50);
+
+    return {
+      models,
+      modes: thinking,
+      configOptions: buildConfigOptions(state),
+      _meta: { piAcp: { ...metadata, startupInfo: null } },
+    };
+  }
+
+  async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
+    if (!isAbsolute(params.cwd)) {
+      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`);
+    }
+
+    const additionalDirectories =
+      normalizeAdditionalDirectories(
+        (params as { additionalDirectories?: unknown }).additionalDirectories,
+      ) ?? [];
+    const stored = this.store.get(params.sessionId);
+    const sourceFile =
+      typeof stored?.sessionFile === "string" && existsSync(stored.sessionFile)
+        ? stored.sessionFile
+        : findPiSessionFile(params.sessionId);
+    if (!sourceFile) throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`);
+
+    const raw = readFileSync(sourceFile, "utf8");
+    const firstNewline = raw.indexOf("\n");
+    const firstLine = firstNewline === -1 ? raw : raw.slice(0, firstNewline);
+    const rest = firstNewline === -1 ? "" : raw.slice(firstNewline + 1);
+    let header: Record<string, unknown>;
+    try {
+      header = JSON.parse(firstLine) as Record<string, unknown>;
+    } catch {
+      throw RequestError.internalError({}, `Invalid pi session header: ${sourceFile}`);
+    }
+
+    const sessionId = randomUUID();
+    const forkDir = join(getPiSessionsDir(), "forked");
+    mkdirSync(forkDir, { recursive: true });
+    const forkFile = join(forkDir, `${sessionId}.jsonl`);
+    writeFileSync(
+      forkFile,
+      JSON.stringify({ ...header, id: sessionId, cwd: params.cwd }) + "\n" + rest,
+      "utf8",
+    );
+
+    const proc = await PiRpcProcess.spawn({
+      cwd: params.cwd,
+      sessionPath: forkFile,
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+    });
+    const fileCommands = loadSlashCommands(params.cwd);
+    const session = this.sessions.getOrCreate(sessionId, {
+      cwd: params.cwd,
+      mcpServers: params.mcpServers ?? [],
+      conn: this.conn,
+      proc,
+      fileCommands,
+    });
+    (this.sessions as any).closeAllExcept?.(session.sessionId);
+
+    this.lastSessionCwd = params.cwd;
+    this.sessionAdditionalDirectories.set(sessionId, additionalDirectories);
+    this.store.upsert({ sessionId, cwd: params.cwd, sessionFile: forkFile, additionalDirectories });
+
+    const state = await proc.getState().catch(() => null);
+    const models = await getModelState(proc, params.cwd, { state });
+    const thinking = await getThinkingState(proc, { state });
+    const metadata = buildSessionMetadata({
+      state,
+      models,
+      sessionFile: forkFile,
+      additionalDirectories,
+    });
+
+    void this.conn.sessionUpdate({
+      sessionId,
+      update: { sessionUpdate: "session_info_update", _meta: { piAcp: metadata } },
+    });
+    setTimeout(() => {
+      void this.emitAvailableCommands(sessionId, proc, params.cwd, fileCommands);
+    }, 50);
+
+    return {
+      sessionId,
+      models,
+      modes: thinking,
+      configOptions: buildConfigOptions(state),
+      _meta: { piAcp: { ...metadata, startupInfo: null } },
+    };
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -1255,14 +1526,21 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const models = await getModelState(proc, params.cwd);
-    const thinking = await getThinkingState(proc);
+    const loadState = await proc.getState().catch(() => null);
+    const models = await getModelState(proc, params.cwd, { state: loadState });
+    const thinking = await getThinkingState(proc, { state: loadState });
 
-    const metadata = buildSessionMetadata({ models, sessionFile, additionalDirectories });
+    const metadata = buildSessionMetadata({
+      state: loadState,
+      models,
+      sessionFile,
+      additionalDirectories,
+    });
 
     const response = {
       models,
       modes: thinking,
+      configOptions: buildConfigOptions(loadState),
       _meta: {
         piAcp: {
           ...metadata,
@@ -1288,7 +1566,7 @@ export class PiAcpAgent implements ACPAgent {
 
     // Emit usage telemetry for the loaded session (best-effort, non-blocking).
     // Pass the already-fetched state to avoid an extra RPC round-trip.
-    void this.maybeEmitUsageUpdate(session.sessionId, proc);
+    void this.maybeEmitUsageUpdate(session.sessionId, proc, loadState);
 
     // Advertise slash commands after the response so the client knows the session exists.
     setTimeout(() => {
@@ -1415,6 +1693,39 @@ export class PiAcpAgent implements ACPAgent {
     await this.extMethod(method, params);
   }
 
+  async setSessionConfigOption(
+    params: SetSessionConfigOptionRequest,
+  ): Promise<SetSessionConfigOptionResponse> {
+    const session = await this.ensureSession(params.sessionId);
+
+    if (params.configId === "auto_compaction") {
+      if (typeof params.value !== "boolean") {
+        throw RequestError.invalidParams("auto_compaction requires a boolean value");
+      }
+      await session.proc.setAutoCompaction(params.value);
+    } else if (params.configId === "steering_mode") {
+      if (params.value !== "all" && params.value !== "one-at-a-time") {
+        throw RequestError.invalidParams(`Invalid steering_mode value: ${String(params.value)}`);
+      }
+      await session.proc.setSteeringMode(params.value);
+    } else if (params.configId === "follow_up_mode") {
+      if (params.value !== "all" && params.value !== "one-at-a-time") {
+        throw RequestError.invalidParams(`Invalid follow_up_mode value: ${String(params.value)}`);
+      }
+      await session.proc.setFollowUpMode(params.value);
+    } else {
+      throw RequestError.invalidParams(`Unknown configId: ${params.configId}`);
+    }
+
+    const state = await session.proc.getState().catch(() => null);
+    const configOptions = buildConfigOptions(state);
+    void this.conn.sessionUpdate({
+      sessionId: session.sessionId,
+      update: { sessionUpdate: "config_option_update", configOptions },
+    });
+    return { configOptions };
+  }
+
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
     const session = await this.ensureSession(params.sessionId);
 
@@ -1424,12 +1735,15 @@ export class PiAcpAgent implements ACPAgent {
     let provider: string | null = null;
     let modelId: string | null = null;
 
-    if (params.modelId.includes("/")) {
-      const [p, ...rest] = params.modelId.split("/");
-      provider = p;
-      modelId = rest.join("/");
+    const requestedModelId = params.modelId.trim();
+    if (!requestedModelId) throw RequestError.invalidParams("modelId must not be empty");
+
+    if (requestedModelId.includes("/")) {
+      const [p, ...rest] = requestedModelId.split("/");
+      provider = p.trim();
+      modelId = rest.join("/").trim();
     } else {
-      modelId = params.modelId;
+      modelId = requestedModelId;
     }
 
     if (!provider) {
@@ -1443,7 +1757,9 @@ export class PiAcpAgent implements ACPAgent {
     }
 
     if (!provider || !modelId) {
-      throw RequestError.invalidParams(`Unknown modelId: ${params.modelId}`);
+      throw RequestError.invalidParams(
+        `Unknown modelId: ${params.modelId} — use provider/modelId format (e.g. anthropic/claude-sonnet-4)`,
+      );
     }
 
     try {
@@ -1451,6 +1767,14 @@ export class PiAcpAgent implements ACPAgent {
     } catch (err) {
       throw mapPiRpcError(err, "Failed to set model");
     }
+
+    void this.conn.sessionUpdate({
+      sessionId: session.sessionId,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { piAcp: { model: `${provider}/${modelId}` } },
+      },
+    });
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
@@ -1497,8 +1821,11 @@ export function negotiateCapabilities(clientCaps: ClientCapabilities | undefined
   // Capabilities we actually implement. Nothing is claimed here unless there is a
   // real handler for it in this file.
   //
-  // Intentionally NOT advertised (not implemented):
-  //   nes, providers, auth.logout, terminal (client-side), fs (client-side)
+  // Intentionally NOT advertised:
+  //   - NES: pi is a turn/session agent, not a next-edit/autocomplete engine.
+  //   - audio: ACP has AudioContent, but pi RPC has no audio input/output path.
+  //   - providers/auth.logout: no pi RPC provider-management or safe auth-reset surface.
+  //   - terminal/fs delegation: pi executes locally; don't claim client-side delegation.
   const agentCapabilities: AgentCapabilities = {
     loadSession: true,
     mcpCapabilities: { http: false, sse: false },
@@ -1513,6 +1840,9 @@ export function negotiateCapabilities(clientCaps: ClientCapabilities | undefined
       // Both closeSession and unstable_listSessions are implemented.
       close: {},
       list: {},
+      fork: {},
+      // session/resume is implemented: attach to an existing session without replaying history.
+      resume: {},
     },
   };
 
@@ -1523,6 +1853,8 @@ export function negotiateCapabilities(clientCaps: ClientCapabilities | undefined
       additionalDirectories: true,
       sessionClose: true,
       sessionList: true,
+      sessionFork: true,
+      sessionResume: true,
       image: true,
       audio: false,
       embeddedContext,
@@ -1537,6 +1869,49 @@ export function negotiateCapabilities(clientCaps: ClientCapabilities | undefined
   };
 
   return { agentCapabilities, debug };
+}
+
+export function buildConfigOptions(state: unknown): SessionConfigOption[] {
+  const s = state && typeof state === "object" ? (state as Record<string, unknown>) : {};
+  const steeringMode = s["steeringMode"] === "one-at-a-time" ? "one-at-a-time" : "all";
+  const followUpMode = s["followUpMode"] === "one-at-a-time" ? "one-at-a-time" : "all";
+  const deliveryOptions = [
+    { value: "all", name: "All messages", description: "Send all queued messages together." },
+    {
+      value: "one-at-a-time",
+      name: "One at a time",
+      description: "Send queued messages one at a time.",
+    },
+  ];
+
+  return [
+    {
+      id: "auto_compaction",
+      name: "Auto-compaction",
+      description: "Automatically compact long pi sessions when context gets full.",
+      category: "_pi",
+      type: "boolean",
+      currentValue: s["autoCompactionEnabled"] === false ? false : true,
+    },
+    {
+      id: "steering_mode",
+      name: "Steering mode",
+      description: "How pi should deliver steering prompts sent while a turn is running.",
+      category: "_pi",
+      type: "select",
+      currentValue: steeringMode,
+      options: deliveryOptions,
+    },
+    {
+      id: "follow_up_mode",
+      name: "Follow-up mode",
+      description: "How pi should deliver follow-up prompts sent while a turn is running.",
+      category: "_pi",
+      type: "select",
+      currentValue: followUpMode,
+      options: deliveryOptions,
+    },
+  ];
 }
 
 /**
@@ -1662,10 +2037,44 @@ async function getThinkingState(
     currentModeId: current,
     availableModes: available.map((id) => ({
       id,
-      name: `Thinking: ${id}`,
-      description: null,
+      name: thinkingLevelName(id),
+      description: thinkingLevelDescription(id),
     })),
   };
+}
+
+function thinkingLevelName(level: ThinkingLevel): string {
+  switch (level) {
+    case "off":
+      return "No thinking";
+    case "minimal":
+      return "Minimal thinking";
+    case "low":
+      return "Low thinking";
+    case "medium":
+      return "Medium thinking";
+    case "high":
+      return "High thinking";
+    case "xhigh":
+      return "Extended thinking";
+  }
+}
+
+function thinkingLevelDescription(level: ThinkingLevel): string {
+  switch (level) {
+    case "off":
+      return "Disables extended thinking; the model responds directly without reasoning.";
+    case "minimal":
+      return "Very brief reasoning pass before responding.";
+    case "low":
+      return "Light reasoning; faster responses with modest accuracy gains.";
+    case "medium":
+      return "Balanced reasoning; recommended for most tasks.";
+    case "high":
+      return "Deep reasoning; better for complex, multi-step problems.";
+    case "xhigh":
+      return "Maximum reasoning budget; slowest but most thorough.";
+  }
 }
 
 function stripThinkingSuffix(pattern: string): string {
@@ -1750,8 +2159,9 @@ async function getModelState(
       const name = String(m?.name ?? id);
       return {
         modelId: `${provider}/${id}`,
-        name: `${provider}/${name}`,
+        name,
         description: null,
+        _meta: { provider },
       } satisfies ModelInfo;
     })
     .filter(Boolean) as ModelInfo[];

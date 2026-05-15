@@ -20,12 +20,14 @@ Expect minor breaking changes. Zed is the primary target; other ACP clients may 
   - `edit` and `write` attempt to emit ACP structured diffs on completion
 - Session persistence and restore
   - pi stores its own sessions under the configured pi session directory
-  - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file
+  - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` and `session/resume` can reattach to a previous pi session file
+  - sessions can be forked by copying the pi session file with a new session id, preserving history without mutating the source
   - sessions get an initial title from the first prompt and can be closed from the ACP client
-  - ACP `additionalDirectories` are accepted on new/load/list, stored in adapter metadata, surfaced in session metadata/startup info, and used for exact-match session list filtering. pi still uses `cwd` as the execution base; these roots are context metadata, not a sandbox.
+  - ACP `additionalDirectories` are accepted on new/load/resume/fork/list, stored in adapter metadata, surfaced in session metadata/startup info, and used for exact-match session list filtering. pi still uses `cwd` as the execution base; these roots are context metadata, not a sandbox.
 - Zed-focused session metadata
   - initializes with conservative capability negotiation and `_meta.piAcp` debug details for the ACP handshake
   - emits `session_info_update._meta.piAcp` with pi-acp version, model, context window, session file, additional directories, queue state, and startup info
+  - exposes ACP session config options for pi auto-compaction, steering mode, and follow-up mode, and keeps them in sync with adapter slash commands
   - emits best-effort ACP `usage_update` telemetry from pi session stats when the context window is known; clients can opt out with `clientCapabilities._meta["usage-update"] = false`
 - Slash commands
   - advertises pi RPC commands, file-based prompt commands, skill commands, and adapter built-ins to the ACP client
@@ -42,7 +44,7 @@ Expect minor breaking changes. Zed is the primary target; other ACP clients may 
   - `pi-acp/reloadCommands` refreshes the ACP `available_commands_update` notification
 - Skills and pi packages are loaded by pi directly and are available in ACP sessions
 - Startup info mirrors pi's terminal prelude: pi version, context, skills, prompts, extensions, and configured packages. Disable it with `quietStartup: true` in pi settings (`~/.pi/agent/settings.json` or `<project>/.pi/settings.json`).
-- Session history is supported in Zed. Session loading/history maps to pi's session files, so sessions can be resumed both in `pi` and in the ACP client.
+- Session history is supported in Zed. Session loading/resume/fork maps to pi's session files, so sessions can be resumed both in `pi` and in the ACP client.
 
 ## Prerequisites
 
@@ -226,6 +228,8 @@ Covered flows:
 - `session/cancel`
 - `session/close`
 - `session/load` — cross-process replay
+- `session/resume` — reattach without replaying prior messages
+- `session/fork` — copy a pi session file into an independent fork
 
 Extension UI notify/select is covered by unit tests in `test/extension-ui.test.ts`
 (the ACP SDK routes those requests internally and they don't surface cleanly over raw stdio).
@@ -240,7 +244,7 @@ Project layout:
 - No ACP filesystem delegation (`fs/*`) and no ACP terminal delegation (`terminal/*`). pi reads/writes and executes locally.
 - ACP `additionalDirectories` are metadata only in the adapter. They are stored, advertised, and included in startup context, but pi still operates from the session `cwd`; they do not enforce filesystem scope.
 - MCP servers are accepted in ACP params and stored in session state, but not wired through to pi by this adapter. Configure MCP through pi itself if you need it in a pi session.
-- Extension UI support is partial. `notify`, `select`, and `confirm` are handled; richer TUI/editor/status/widget behavior is degraded.
+- Extension UI support is partial. `notify`, `select`, `confirm`, and single-line `input` are handled; richer TUI/editor/status/widget behavior is degraded.
 - pi commands are advertised from `get_commands`, but not every pi or extension command has a perfect ACP/Zed equivalent.
 - Queue/active-turn behavior is adapter-managed: normal concurrent prompts are sent to pi as steering messages.
 

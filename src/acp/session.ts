@@ -927,6 +927,12 @@ export class PiAcpSession {
       return;
     }
 
+    if (uiType === "input") {
+      this.handleInputElicitation(requestId, ev);
+      return;
+    }
+
+    // editor: ACP elicitation string formats don't cover multiline text, so we auto-cancel.
     // Dialog types we cannot represent in ACP yet: unblock pi with the default cancelled value.
     if (uiType !== "select" && uiType !== "confirm") {
       this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
@@ -1027,6 +1033,76 @@ export class PiAcpSession {
       .catch(() => {
         this.pendingUiRequests.delete(requestId);
         this.pendingSelectValues.delete(requestId);
+        this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
+      });
+  }
+
+  /**
+   * Bridge a pi `input` extension_ui_request to ACP `unstable_createElicitation` (form mode).
+   *
+   * The pi input prompt maps naturally to a single-field form schema. If the client doesn't
+   * support elicitation the SDK throws; we catch and fall back to auto-cancel.
+   */
+  private handleInputElicitation(requestId: string, ev: PiRpcEvent): void {
+    const ui = (ev as any).ui ?? ev;
+    const message =
+      typeof (ev as any).message === "string" && (ev as any).message
+        ? (ev as any).message
+        : typeof ui.message === "string" && ui.message
+          ? ui.message
+          : typeof ui.title === "string" && ui.title
+            ? ui.title
+            : "Enter a value";
+
+    const placeholder = typeof ui.placeholder === "string" ? ui.placeholder : undefined;
+    const defaultValue = typeof ui.default === "string" ? ui.default : undefined;
+
+    let cancelFn: (() => void) | null = null;
+    const cancelPromise = new Promise<void>((resolve) => {
+      cancelFn = resolve;
+    });
+
+    this.pendingUiRequests.set(requestId, cancelFn!);
+
+    const toolCallId = this.activeToolCallId() ?? requestId;
+
+    void Promise.race([
+      this.conn.unstable_createElicitation({
+        sessionId: this.sessionId,
+        toolCallId,
+        mode: "form",
+        message,
+        requestedSchema: {
+          type: "object",
+          properties: {
+            value: {
+              type: "string",
+              ...(placeholder ? { description: placeholder } : {}),
+              ...(defaultValue ? { default: defaultValue } : {}),
+            },
+          },
+          required: ["value"],
+        },
+      }),
+      cancelPromise.then(() => ({ action: "cancel" as const })),
+    ])
+      .then((result) => {
+        this.pendingUiRequests.delete(requestId);
+        const action = (result as any)?.action;
+        if (action === "accept") {
+          const value = String((result as any).content?.value ?? "");
+          this.proc.sendExtensionUiResponse(requestId, { value });
+        } else {
+          this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
+        }
+      })
+      .catch((err) => {
+        this.pendingUiRequests.delete(requestId);
+        debugLog("session.input_elicitation.failed", {
+          sessionId: this.sessionId,
+          requestId,
+          error: String((err as Error)?.message ?? err),
+        });
         this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
       });
   }
