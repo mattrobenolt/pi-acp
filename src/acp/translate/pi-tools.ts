@@ -13,6 +13,15 @@ export function toToolTitle(toolName: string, args: unknown): string {
       const path = typeof a?.path === "string" ? a.path : undefined;
       return path ? `read: ${path}` : "read";
     }
+    case "find": {
+      const pattern = typeof a?.pattern === "string" ? a.pattern : undefined;
+      const path = typeof a?.path === "string" && a.path !== "." ? ` ${a.path}` : "";
+      return pattern ? `find ${pattern}${path}` : "find";
+    }
+    case "grep": {
+      const pattern = typeof a?.pattern === "string" ? a.pattern : undefined;
+      return pattern ? `grep ${pattern}` : "grep";
+    }
     case "write": {
       const path = typeof a?.path === "string" ? a.path : undefined;
       return path ? `write: ${path}` : "write";
@@ -35,6 +44,9 @@ export function toToolKind(toolName: string): ToolKind {
       return "edit";
     case "bash":
       return "execute";
+    case "find":
+    case "grep":
+      return "search";
     default:
       return "other";
   }
@@ -44,7 +56,10 @@ export function toToolCallLocations(
   args: unknown,
   cwd: string,
   line?: number,
+  toolName?: string,
 ): ToolCallLocation[] | undefined {
+  if (toolName === "find" || toolName === "grep") return undefined;
+
   const path =
     typeof (args as { path?: unknown } | null | undefined)?.path === "string"
       ? (args as { path: string }).path

@@ -74,8 +74,9 @@ function toToolCallLocations(
   args: unknown,
   cwd: string,
   line?: number,
+  toolName?: string,
 ): ToolCallLocation[] | undefined {
-  return sharedToToolCallLocations(args, cwd, line);
+  return sharedToToolCallLocations(args, cwd, line, toolName);
 }
 
 const debugLogPath = process.env.PI_ACP_DEBUG_LOG?.trim() || null;
@@ -623,7 +624,7 @@ export class PiAcpSession {
                     }
                   })();
 
-            const locations = toToolCallLocations(rawInput, this.cwd);
+            const locations = toToolCallLocations(rawInput, this.cwd, undefined, toolName);
             const existingStatus = this.currentToolCalls.get(toolCallId);
             // IMPORTANT: never downgrade status (e.g. if we already marked in_progress via tool_execution_start).
             const status = existingStatus ?? "pending";
@@ -685,7 +686,7 @@ export class PiAcpSession {
           }
         }
 
-        const locations = toToolCallLocations(args, this.cwd, line);
+        const locations = toToolCallLocations(args, this.cwd, line, toolName);
 
         // If we already surfaced the tool call while the model streamed it, just transition.
         if (!this.currentToolCalls.has(toolCallId)) {

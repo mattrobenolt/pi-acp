@@ -1490,7 +1490,7 @@ export class PiAcpAgent implements ACPAgent {
         const toolCallId = String((m as any)?.toolCallId ?? randomUUID());
         const isError = Boolean((m as any)?.isError);
         const args = argsByToolCallId.get(toolCallId);
-        const locations = toToolCallLocations(args, params.cwd);
+        const locations = toToolCallLocations(args, params.cwd, undefined, toolName);
 
         // Create a synthetic ACP tool call to render historic tool usage.
         await this.conn.sessionUpdate({
