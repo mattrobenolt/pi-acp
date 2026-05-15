@@ -20,7 +20,7 @@ import {
   type StopReason
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
-import { SessionManager } from './session.js'
+import { debugLog, SessionManager } from './session.js'
 import { SessionStore } from './session-store.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSessionFile } from './pi-sessions.js'
@@ -169,6 +169,8 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async newSession(params: NewSessionRequest) {
+    debugLog('agent.newSession.enter', { cwd: params.cwd, mcpServers: params.mcpServers?.length ?? 0 })
+
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
@@ -322,6 +324,12 @@ export class PiAcpAgent implements ACPAgent {
       })()
     }, 0)
 
+    debugLog('agent.newSession.return', {
+      sessionId: session.sessionId,
+      cwd: params.cwd,
+      hasStartupInfo: Boolean(preludeText),
+    })
+
     return response
   }
 
@@ -332,9 +340,20 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
+    debugLog('agent.prompt.enter', {
+      sessionId: params.sessionId,
+      prompt: params.prompt,
+    })
+
     const session = this.sessions.get(params.sessionId)
 
     const { message, images } = promptToPiMessage(params.prompt)
+
+    debugLog('agent.prompt.normalized', {
+      sessionId: params.sessionId,
+      message,
+      imageCount: images.length,
+    })
 
     // Built-in ACP slash command handling (headless-friendly subset).
     // Note: file-based slash commands are expanded inside session.prompt().
@@ -780,10 +799,21 @@ export class PiAcpAgent implements ACPAgent {
 
     const result = await session.prompt(message, images)
 
+    debugLog('agent.prompt.session_result', {
+      sessionId: params.sessionId,
+      result,
+    })
+
     // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
     // unless we know this was a cancellation.
     const stopReason: StopReason =
       result === 'error' ? (session.wasCancelRequested() ? 'cancelled' : 'end_turn') : result
+
+    debugLog('agent.prompt.return', {
+      sessionId: params.sessionId,
+      stopReason,
+      rawResult: result,
+    })
 
     return { stopReason }
   }
@@ -823,6 +853,12 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    debugLog('agent.loadSession.enter', {
+      sessionId: params.sessionId,
+      cwd: params.cwd,
+      mcpServers: params.mcpServers?.length ?? 0,
+    })
+
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
@@ -837,7 +873,19 @@ export class PiAcpAgent implements ACPAgent {
     // MVP: ignore mcpServers.
     // Prefer ACP-created mapping first (fast path), otherwise scan pi sessions dir.
     const stored = this.store.get(params.sessionId)
-    const sessionFile = stored?.sessionFile ?? findPiSessionFile(params.sessionId)
+    const storedSessionFile = stored?.sessionFile
+    const storedExists = typeof storedSessionFile === 'string' && existsSync(storedSessionFile)
+    const scannedSessionFile = storedExists ? null : findPiSessionFile(params.sessionId)
+    const sessionFile = storedExists ? storedSessionFile : scannedSessionFile
+
+    debugLog('agent.loadSession.session_file', {
+      sessionId: params.sessionId,
+      storedSessionFile: storedSessionFile ?? null,
+      storedExists,
+      scannedSessionFile: scannedSessionFile ?? null,
+      resolvedSessionFile: sessionFile ?? null,
+      usedStored: storedExists,
+    })
 
     if (!sessionFile) {
       throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
@@ -883,6 +931,11 @@ export class PiAcpAgent implements ACPAgent {
     // Replay full conversation history.
     const data = (await proc.getMessages()) as any
     const messages = Array.isArray(data?.messages) ? data.messages : []
+
+    debugLog('agent.loadSession.replay.begin', {
+      sessionId: params.sessionId,
+      messageCount: messages.length,
+    })
 
     for (const m of messages) {
       const role = String(m?.role ?? '')
@@ -958,6 +1011,13 @@ export class PiAcpAgent implements ACPAgent {
         }
       }
     }
+
+    debugLog('agent.loadSession.return', {
+      sessionId: params.sessionId,
+      messageCount: messages.length,
+      hasModels: Boolean(models),
+      currentModeId: thinking.currentModeId,
+    })
 
     // Advertise slash commands after the response so the client knows the session exists.
     setTimeout(() => {

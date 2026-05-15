@@ -5,8 +5,10 @@ import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 import { PiRpcProcess } from '../../src/pi-rpc/process.js'
 
 class FakeStore {
+  constructor(private readonly sessionFile: string) {}
+
   get(_sessionId: string) {
-    return { sessionId: 's1', cwd: '/tmp/project', sessionFile: '/tmp/s.jsonl', updatedAt: new Date().toISOString() }
+    return { sessionId: 's1', cwd: '/tmp/project', sessionFile: this.sessionFile, updatedAt: new Date().toISOString() }
   }
   upsert() {
     // noop
@@ -33,11 +35,17 @@ test('PiAcpAgent: does not emit startup info on loadSession', async () => {
   }
 
   try {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const sessionFile = join(mkdtempSync(join(tmpdir(), 'pi-acp-session-')), 's.jsonl')
+    writeFileSync(sessionFile, '', 'utf-8')
+
     const conn = new FakeAgentSideConnection()
     const agent = new PiAcpAgent(asAgentConn(conn))
 
     // Inject store so loadSession resolves without depending on actual filesystem.
-    ;(agent as any).store = new FakeStore()
+    ;(agent as any).store = new FakeStore(sessionFile)
 
     const res = await agent.loadSession({ sessionId: 's1', cwd: '/tmp/project', mcpServers: [] } as any)
 
