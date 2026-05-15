@@ -113,11 +113,8 @@ Runtime/debug paths to avoid committing:
 - `~/.pi/pi-acp/*`
 - pi session JSONL files
 
-## Local references
+## Research notes
 
-Use the actual local checkouts when needed:
-
-- Zed source: `/Users/matt/code/zed`
-- ACP docs/spec checkout may or may not exist locally; prefer web docs or repo discovery instead of assuming an old `~/Dev/learning/...` path.
+This repo has local research notes under `research/`, including ACP/Zed/pi API notes. Read those before spelunking elsewhere.
 
 For pi itself, read the installed pi docs/examples under Matt's pi agent install when working on pi extension/tool APIs.
