@@ -74,6 +74,12 @@ type PiRpcResponse = {
 
 export type PiRpcEvent = Record<string, unknown>;
 
+/** Payload sent back to pi when responding to an extension_ui_request. */
+export type ExtensionUiResponsePayload =
+  | { cancelled: true }
+  | { value: string }
+  | { confirmed: boolean };
+
 type SpawnParams = {
   cwd: string;
   /** Optional override for `pi` executable name/path */
@@ -354,6 +360,19 @@ export class PiRpcProcess {
     if (!res.success)
       throw new Error(`pi get_commands failed: ${res.error ?? JSON.stringify(res.data)}`);
     return res.data;
+  }
+
+  /**
+   * Send an extension_ui_response back to pi (fire-and-forget, no response expected).
+   * Called after resolving an `extension_ui_request` event via ACP request_permission.
+   */
+  sendExtensionUiResponse(id: string, response: ExtensionUiResponsePayload): void {
+    const line = JSON.stringify({ type: "extension_ui_response", id, ...response }) + "\n";
+    try {
+      this.child.stdin.write(line);
+    } catch {
+      // Process may have exited; ignore write errors.
+    }
   }
 
   private request(cmd: PiRpcCommand): Promise<PiRpcResponse> {

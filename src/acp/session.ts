@@ -12,7 +12,12 @@ import { maybeAuthRequiredError } from "./auth-required.js";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
-import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from "../pi-rpc/process.js";
+import {
+  PiRpcProcess,
+  PiRpcSpawnError,
+  type PiRpcEvent,
+  type ExtensionUiResponsePayload,
+} from "../pi-rpc/process.js";
 import { SessionStore } from "./session-store.js";
 import { toolResultToText } from "./translate/pi-tools.js";
 import { expandSlashCommand, type FileSlashCommand } from "./slash-commands.js";
@@ -256,6 +261,12 @@ export class PiAcpSession {
   // The overall agent loop completes when `agent_end` is emitted.
   private inAgentLoop = false;
 
+  // Pending extension_ui_request bridges: keyed by pi requestId.
+  // Each entry is a function that resolves the pending ACP requestPermission with "cancelled".
+  // We call these on session.cancel() so pi doesn't hang waiting.
+  private readonly pendingUiRequests = new Map<string, () => void>();
+  private readonly pendingSelectValues = new Map<string, string[]>();
+
   // For ACP diff support: capture file contents before edits, then emit ToolCallContent {type:"diff"}.
   // This is due to pi sending diff as a string as opposed to ACP expected diff format.
   // Compatible format may need to be implemented in pi in the future.
@@ -355,6 +366,17 @@ export class PiAcpSession {
   async cancel(): Promise<void> {
     // Cancel current and clear any queued prompts.
     this.cancelRequested = true;
+
+    // Cancel any in-flight extension_ui_request bridges so pi doesn't hang.
+    for (const [, cancelFn] of this.pendingUiRequests) {
+      try {
+        cancelFn();
+      } catch {
+        // ignore
+      }
+    }
+    this.pendingUiRequests.clear();
+    this.pendingSelectValues.clear();
 
     if (this.turnQueue.length) {
       const queued = this.turnQueue.splice(0, this.turnQueue.length);
@@ -849,9 +871,120 @@ export class PiAcpSession {
         break;
       }
 
+      case "extension_ui_request": {
+        this.handleExtensionUiRequest(ev);
+        break;
+      }
+
       default:
         break;
     }
+  }
+
+  private handleExtensionUiRequest(ev: PiRpcEvent): void {
+    const requestId = String((ev as any).id ?? (ev as any).requestId ?? "");
+    if (!requestId) return;
+
+    const ui = (ev as any).ui ?? ev;
+    const uiType = String((ev as any).method ?? ui?.type ?? "");
+
+    // Fire-and-forget / unsupported types: respond cancelled immediately so pi doesn't hang.
+    if (uiType !== "select" && uiType !== "confirm") {
+      this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
+      return;
+    }
+
+    // Build ACP permission options based on the ui type.
+    let options: Array<{ optionId: string; name: string; kind: "allow_once" | "reject_once" }>;
+
+    if (uiType === "select") {
+      const rawOptions: unknown[] = Array.isArray(ui.options) ? ui.options : [];
+      const values = rawOptions.map((o) =>
+        typeof o === "string"
+          ? o
+          : String((o as any)?.value ?? (o as any)?.id ?? (o as any)?.label ?? ""),
+      );
+      if (rawOptions.length === 0) {
+        // Nothing to select from — auto-cancel.
+        this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
+        return;
+      }
+      options = rawOptions.map((o: any, index) => ({
+        optionId: String(index),
+        name: String(typeof o === "string" ? o : (o?.label ?? o?.name ?? o?.id ?? "Option")),
+        kind: "allow_once" as const,
+      }));
+      this.pendingSelectValues.set(requestId, values);
+    } else {
+      // confirm
+      const confirmText = typeof ui.confirmText === "string" ? ui.confirmText : "Yes";
+      const rejectText = typeof ui.rejectText === "string" ? ui.rejectText : "No";
+      options = [
+        { optionId: "confirm", name: confirmText, kind: "allow_once" as const },
+        { optionId: "reject", name: rejectText, kind: "reject_once" as const },
+      ];
+    }
+
+    const title =
+      typeof ui.title === "string" && ui.title
+        ? ui.title
+        : typeof ui.message === "string" && ui.message
+          ? ui.message
+          : "Extension request";
+
+    // Create a cancellable promise so session.cancel() can resolve it early.
+    let cancelFn: (() => void) | null = null;
+    const cancelPromise = new Promise<void>((resolve) => {
+      cancelFn = resolve;
+    });
+
+    // Register the cancel hook.
+    this.pendingUiRequests.set(requestId, cancelFn!);
+
+    void Promise.race([
+      this.conn.requestPermission({
+        sessionId: this.sessionId,
+        options: options.map((o) => ({
+          optionId: o.optionId,
+          name: o.name,
+          kind: o.kind,
+        })),
+        toolCall: {
+          toolCallId: requestId,
+          title,
+          status: "pending",
+        },
+      }),
+      cancelPromise.then((): { outcome: "cancelled" } => ({ outcome: "cancelled" })),
+    ])
+      .then((result) => {
+        this.pendingUiRequests.delete(requestId);
+
+        const outcome = (result as any)?.outcome;
+        let payload: ExtensionUiResponsePayload;
+
+        if (outcome === "cancelled") {
+          payload = { cancelled: true };
+        } else if (outcome === "selected") {
+          const optionId = String((result as any).optionId ?? "");
+          if (uiType === "confirm") {
+            payload = { confirmed: optionId === "confirm" };
+          } else {
+            const values = this.pendingSelectValues.get(requestId) ?? [];
+            payload = { value: values[Number(optionId)] ?? optionId };
+          }
+        } else {
+          payload = { cancelled: true };
+        }
+
+        this.pendingSelectValues.delete(requestId);
+        this.proc.sendExtensionUiResponse(requestId, payload);
+      })
+      .catch(() => {
+        this.pendingUiRequests.delete(requestId);
+        this.pendingSelectValues.delete(requestId);
+        this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
+      });
   }
 }
 
