@@ -53,6 +53,23 @@ test("PiAcpSession: renders bash tools as execute kind", async () => {
   assert.equal((output.update as any)._meta.terminal_output.data, "\u001b[31mred\u001b[0m\n");
 
   proc.emit({
+    type: "tool_execution_update",
+    toolCallId: "t1",
+    toolName: "bash",
+    partialResult: { content: [{ type: "text", text: "\u001b[31mred\u001b[0m\nok" }] },
+  });
+
+  await new Promise((r) => setTimeout(r, 0));
+
+  const secondOutput = conn.updates.find(
+    (u) =>
+      (u.update as any).toolCallId === "t1" &&
+      u.update.sessionUpdate === "tool_call_update" &&
+      (u.update as any)._meta?.terminal_output?.data === "ok",
+  );
+  assert.ok(secondOutput, "expected cumulative partial result to emit only the delta");
+
+  proc.emit({
     type: "tool_execution_end",
     toolCallId: "t1",
     toolName: "bash",

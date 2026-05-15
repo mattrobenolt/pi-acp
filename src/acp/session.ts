@@ -256,7 +256,7 @@ export class PiAcpSession {
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, "pending" | "in_progress">();
   private currentToolNames = new Map<string, string>();
-  private terminalOutputSent = new Set<string>();
+  private terminalOutputSeen = new Map<string, string>();
 
   // pi can emit multiple `turn_end` events for a single user prompt (e.g. after tool_use).
   // The overall agent loop completes when `agent_end` is emitted.
@@ -735,8 +735,8 @@ export class PiAcpSession {
         const text = toolResultToText(partial);
 
         const toolName = this.currentToolNames.get(toolCallId);
-        const terminal = terminalOutput(toolName, toolCallId, text);
-        if (toolName === "bash" && text) this.terminalOutputSent.add(toolCallId);
+        const terminalText = this.nextTerminalOutput(toolCallId, toolName, text);
+        const terminal = terminalOutput(toolName, toolCallId, terminalText);
 
         this.emit({
           sessionUpdate: "tool_call_update",
@@ -801,15 +801,10 @@ export class PiAcpSession {
         }
 
         const toolName = this.currentToolNames.get(toolCallId);
-        const alreadySentTerminalOutput = this.terminalOutputSent.has(toolCallId);
-        const terminal = terminalOutput(
-          toolName,
-          toolCallId,
-          alreadySentTerminalOutput ? "" : text,
-          {
-            exitCode: isError ? 1 : 0,
-          },
-        );
+        const terminalText = this.nextTerminalOutput(toolCallId, toolName, text);
+        const terminal = terminalOutput(toolName, toolCallId, terminalText, {
+          exitCode: isError ? 1 : 0,
+        });
 
         this.emit({
           sessionUpdate: "tool_call_update",
@@ -822,7 +817,7 @@ export class PiAcpSession {
 
         this.currentToolCalls.delete(toolCallId);
         this.currentToolNames.delete(toolCallId);
-        this.terminalOutputSent.delete(toolCallId);
+        this.terminalOutputSeen.delete(toolCallId);
         this.editSnapshots.delete(toolCallId);
         break;
       }
@@ -942,6 +937,24 @@ export class PiAcpSession {
    * exactly one. Used to associate extension_ui_request dialogs with the
    * tool that triggered them so ACP clients can render them in context.
    */
+  private nextTerminalOutput(
+    toolCallId: string,
+    toolName: string | undefined,
+    text: string,
+  ): string {
+    if (toolName !== "bash" || !text) return "";
+    const seen = this.terminalOutputSeen.get(toolCallId) ?? "";
+    if (seen && text.startsWith(seen)) {
+      const delta = text.slice(seen.length);
+      this.terminalOutputSeen.set(toolCallId, text);
+      return delta;
+    }
+    if (seen && seen.startsWith(text)) return "";
+    if (text === seen) return "";
+    this.terminalOutputSeen.set(toolCallId, text);
+    return text;
+  }
+
   private activeToolCallId(): string | null {
     const inProgress = [...this.currentToolCalls.entries()].filter(
       ([, status]) => status === "in_progress",
