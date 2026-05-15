@@ -421,31 +421,50 @@ export class PiAcpAgent implements ACPAgent {
             enableSkillCommands,
             includeExtensionCommands,
           });
+          const availableCommands = mergeCommands(commands, builtinAvailableCommands());
+
+          debugLog("agent.commands.available", {
+            sessionId: session.sessionId,
+            source: "pi-rpc",
+            count: availableCommands.length,
+            names: availableCommands.map((c) => c.name),
+          });
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
               sessionUpdate: "available_commands_update",
-              availableCommands: mergeCommands(commands, builtinAvailableCommands()),
+              availableCommands,
             },
           });
           return;
-        } catch {
-          // Fall back to file-based prompt templates (legacy behavior).
+        } catch (error) {
+          debugLog("agent.commands.pi_failed", {
+            sessionId: session.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
+
+        const availableCommands = mergeCommands(
+          toAvailableCommands(fileCommands),
+          builtinAvailableCommands(),
+        );
+        debugLog("agent.commands.available", {
+          sessionId: session.sessionId,
+          source: "file-fallback",
+          count: availableCommands.length,
+          names: availableCommands.map((c) => c.name),
+        });
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
             sessionUpdate: "available_commands_update",
-            availableCommands: mergeCommands(
-              toAvailableCommands(fileCommands),
-              builtinAvailableCommands(),
-            ),
+            availableCommands,
           },
         });
       })();
-    }, 0);
+    }, 50);
 
     debugLog("agent.newSession.return", {
       sessionId: session.sessionId,
@@ -1199,31 +1218,50 @@ export class PiAcpAgent implements ACPAgent {
             enableSkillCommands,
             includeExtensionCommands,
           });
+          const availableCommands = mergeCommands(commands, builtinAvailableCommands());
+
+          debugLog("agent.commands.available", {
+            sessionId: session.sessionId,
+            source: "pi-rpc",
+            count: availableCommands.length,
+            names: availableCommands.map((c) => c.name),
+          });
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
             update: {
               sessionUpdate: "available_commands_update",
-              availableCommands: mergeCommands(commands, builtinAvailableCommands()),
+              availableCommands,
             },
           });
           return;
-        } catch {
-          // fall back
+        } catch (error) {
+          debugLog("agent.commands.pi_failed", {
+            sessionId: session.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
+
+        const availableCommands = mergeCommands(
+          toAvailableCommands(fileCommands),
+          builtinAvailableCommands(),
+        );
+        debugLog("agent.commands.available", {
+          sessionId: session.sessionId,
+          source: "file-fallback",
+          count: availableCommands.length,
+          names: availableCommands.map((c) => c.name),
+        });
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
             sessionUpdate: "available_commands_update",
-            availableCommands: mergeCommands(
-              toAvailableCommands(fileCommands),
-              builtinAvailableCommands(),
-            ),
+            availableCommands,
           },
         });
       })();
-    }, 0);
+    }, 50);
 
     return response;
   }
