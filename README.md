@@ -27,7 +27,6 @@ Expect minor breaking changes. Zed is the primary target; other ACP clients may 
 - Zed-focused session metadata
   - initializes with conservative capability negotiation and `_meta.piAcp` debug details for the ACP handshake
   - emits `session_info_update._meta.piAcp` with pi-acp version, model, context window, session file, additional directories, queue state, and startup info
-  - exposes ACP session config options for pi auto-compaction, steering mode, and follow-up mode, and keeps them in sync with adapter slash commands
   - emits best-effort ACP `usage_update` telemetry from pi session stats when the context window is known; clients can opt out with `clientCapabilities._meta["usage-update"] = false`
 - Slash commands
   - advertises pi RPC commands, file-based prompt commands, skill commands, and adapter built-ins to the ACP client

@@ -564,7 +564,6 @@ export class PiAcpAgent implements ACPAgent {
       sessionId: session.sessionId,
       models,
       modes: thinking,
-      configOptions: buildConfigOptions(state),
       _meta: {
         piAcp: {
           ...metadata,
@@ -840,7 +839,6 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         await session.proc.setSteeringMode(modeRaw as "all" | "one-at-a-time");
-        await this.emitConfigOptionUpdate(session.sessionId, session.proc);
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -888,7 +886,6 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         await session.proc.setFollowUpMode(modeRaw as "all" | "one-at-a-time");
-        await this.emitConfigOptionUpdate(session.sessionId, session.proc);
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -1120,7 +1117,6 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         await session.proc.setAutoCompaction(enabled);
-        await this.emitConfigOptionUpdate(session.sessionId, session.proc);
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -1278,7 +1274,6 @@ export class PiAcpAgent implements ACPAgent {
     return {
       models,
       modes: thinking,
-      configOptions: buildConfigOptions(state),
       _meta: { piAcp: { ...metadata, startupInfo: null } },
     };
   }
@@ -1361,7 +1356,6 @@ export class PiAcpAgent implements ACPAgent {
       sessionId,
       models,
       modes: thinking,
-      configOptions: buildConfigOptions(state),
       _meta: { piAcp: { ...metadata, startupInfo: null } },
     };
   }
@@ -1540,7 +1534,6 @@ export class PiAcpAgent implements ACPAgent {
     const response = {
       models,
       modes: thinking,
-      configOptions: buildConfigOptions(loadState),
       _meta: {
         piAcp: {
           ...metadata,
