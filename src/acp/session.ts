@@ -256,6 +256,7 @@ export class PiAcpSession {
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, "pending" | "in_progress">();
   private currentToolNames = new Map<string, string>();
+  private terminalOutputSent = new Set<string>();
 
   // pi can emit multiple `turn_end` events for a single user prompt (e.g. after tool_use).
   // The overall agent loop completes when `agent_end` is emitted.
@@ -735,6 +736,7 @@ export class PiAcpSession {
 
         const toolName = this.currentToolNames.get(toolCallId);
         const terminal = terminalOutput(toolName, toolCallId, text);
+        if (toolName === "bash" && text) this.terminalOutputSent.add(toolCallId);
 
         this.emit({
           sessionUpdate: "tool_call_update",
@@ -796,9 +798,15 @@ export class PiAcpSession {
         }
 
         const toolName = this.currentToolNames.get(toolCallId);
-        const terminal = terminalOutput(toolName, toolCallId, text, {
-          exitCode: isError ? 1 : 0,
-        });
+        const alreadySentTerminalOutput = this.terminalOutputSent.has(toolCallId);
+        const terminal = terminalOutput(
+          toolName,
+          toolCallId,
+          alreadySentTerminalOutput ? "" : text,
+          {
+            exitCode: isError ? 1 : 0,
+          },
+        );
 
         this.emit({
           sessionUpdate: "tool_call_update",
@@ -811,6 +819,7 @@ export class PiAcpSession {
 
         this.currentToolCalls.delete(toolCallId);
         this.currentToolNames.delete(toolCallId);
+        this.terminalOutputSent.delete(toolCallId);
         this.editSnapshots.delete(toolCallId);
         break;
       }
