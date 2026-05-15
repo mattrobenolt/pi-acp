@@ -554,19 +554,23 @@ export class PiAcpSession {
 
   private handlePiEvent(ev: PiRpcEvent) {
     const type = String((ev as any).type ?? "");
+    const uiType = extensionUiType(ev);
 
-    debugLog("pi.event", {
-      sessionId: this.sessionId,
-      type,
-      pendingTurn: Boolean(this.pendingTurn),
-      queueDepth: this.turnQueue.length,
-      inAgentLoop: this.inAgentLoop,
-      cancelRequested: this.cancelRequested,
-      assistantEventType: (ev as any).assistantMessageEvent?.type,
-      toolCallId: (ev as any).toolCallId,
-      toolName: (ev as any).toolName,
-      isError: (ev as any).isError,
-    });
+    if (!isNoisyExtensionUiRequest(type, uiType)) {
+      debugLog("pi.event", {
+        sessionId: this.sessionId,
+        type,
+        uiType: uiType || undefined,
+        pendingTurn: Boolean(this.pendingTurn),
+        queueDepth: this.turnQueue.length,
+        inAgentLoop: this.inAgentLoop,
+        cancelRequested: this.cancelRequested,
+        assistantEventType: (ev as any).assistantMessageEvent?.type,
+        toolCallId: (ev as any).toolCallId,
+        toolName: (ev as any).toolName,
+        isError: (ev as any).isError,
+      });
+    }
 
     switch (type) {
       case "message_update": {
@@ -1111,6 +1115,21 @@ export class PiAcpSession {
         this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
       });
   }
+}
+
+function extensionUiType(ev: PiRpcEvent): string {
+  const ui = (ev as any).ui ?? ev;
+  return String((ev as any).method ?? ui?.type ?? "");
+}
+
+function isNoisyExtensionUiRequest(type: string, uiType: string): boolean {
+  return (
+    type === "extension_ui_request" &&
+    (uiType === "setStatus" ||
+      uiType === "setWidget" ||
+      uiType === "setTitle" ||
+      uiType === "set_editor_text")
+  );
 }
 
 function formatAutoRetryMessage(ev: PiRpcEvent): string {
