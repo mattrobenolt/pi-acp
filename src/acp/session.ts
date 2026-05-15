@@ -39,6 +39,12 @@ type QueuedTurn = {
   reject: (err: unknown) => void;
 };
 
+function getEditNeedle(args: any): string {
+  if (typeof args?.oldText === "string") return args.oldText;
+  const firstEdit = Array.isArray(args?.edits) ? args.edits[0] : undefined;
+  return typeof firstEdit?.oldText === "string" ? firstEdit.oldText : "";
+}
+
 function findUniqueLineNumber(text: string, needle: string): number | undefined {
   if (!needle) return undefined;
 
@@ -253,7 +259,7 @@ export class PiAcpSession {
   // For ACP diff support: capture file contents before edits, then emit ToolCallContent {type:"diff"}.
   // This is due to pi sending diff as a string as opposed to ACP expected diff format.
   // Compatible format may need to be implemented in pi in the future.
-  private editSnapshots = new Map<string, { path: string; oldText: string }>();
+  private editSnapshots = new Map<string, { path: string; oldText: string | null }>();
 
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
@@ -634,18 +640,19 @@ export class PiAcpSession {
         let line: number | undefined;
 
         // Capture pre-edit file contents so we can emit a structured ACP diff on completion.
-        if (toolName === "edit") {
+        if (toolName === "edit" || toolName === "write") {
           const p = typeof args?.path === "string" ? args.path : undefined;
           if (p) {
+            const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
             try {
-              const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
               const oldText = readFileSync(abs, "utf8");
               this.editSnapshots.set(toolCallId, { path: p, oldText });
 
-              const needle = typeof args?.oldText === "string" ? args.oldText : "";
+              const needle = getEditNeedle(args);
               line = findUniqueLineNumber(oldText, needle);
             } catch {
-              // Ignore snapshot failures; we'll fall back to plain text output.
+              if (toolName === "write")
+                this.editSnapshots.set(toolCallId, { path: p, oldText: null });
             }
           }
         }
@@ -883,10 +890,8 @@ function toToolKind(toolName: string): ToolKind {
     case "edit":
       return "edit";
     case "bash":
-      // Many ACP clients render `execute` tool calls only via the terminal APIs.
-      // Since this adapter lets pi execute locally (no client terminal delegation),
-      // we report bash as `other` so clients show inline text output blocks.
-      return "other";
+      // pi still executes locally; `execute` is only the ACP rendering kind.
+      return "execute";
     default:
       return "other";
   }

@@ -1014,7 +1014,9 @@ export class PiAcpAgent implements ACPAgent {
                 ? "read"
                 : toolName === "write" || toolName === "edit"
                   ? "edit"
-                  : "other",
+                  : toolName === "bash"
+                    ? "execute"
+                    : "other",
             status: "completed",
             rawInput: null,
             rawOutput: m,
