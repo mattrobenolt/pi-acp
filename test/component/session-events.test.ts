@@ -100,6 +100,7 @@ test("PiAcpSession: emits tool_call + tool_call_update + completes", async () =>
   assert.equal(conn.updates[0]!.update.sessionUpdate, "tool_call");
   assert.equal((conn.updates[0]!.update as any).toolCallId, "t1");
   assert.equal((conn.updates[0]!.update as any).status, "in_progress");
+  assert.equal((conn.updates[0]!.update as any).title, "bash: ls");
   assert.equal((conn.updates[0]!.update as any).locations, undefined);
 
   assert.equal(conn.updates[1]!.update.sessionUpdate, "tool_call_update");
@@ -135,6 +136,7 @@ test("PiAcpSession: emits tool locations from pi path args", async () => {
 
   assert.equal(conn.updates.length, 1);
   assert.equal(conn.updates[0]!.update.sessionUpdate, "tool_call");
+  assert.equal((conn.updates[0]!.update as any).title, "read: src/acp/session.ts");
   assert.deepEqual((conn.updates[0]!.update as any).locations, [
     { path: `${process.cwd()}/src/acp/session.ts` },
   ]);

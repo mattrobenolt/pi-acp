@@ -5,7 +5,8 @@ export function toToolTitle(toolName: string, args: unknown): string {
   const a = args as Record<string, unknown> | null | undefined;
   switch (toolName) {
     case "bash": {
-      const command = typeof a?.command === "string" ? a.command : undefined;
+      const command =
+        typeof a?.command === "string" ? a.command : typeof a?.cmd === "string" ? a.cmd : undefined;
       return command ? `bash: ${command}` : "bash";
     }
     case "read": {

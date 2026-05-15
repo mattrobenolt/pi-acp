@@ -645,6 +645,7 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: "tool_call_update",
                 toolCallId,
+                title: toToolTitle(toolName, rawInput),
                 status,
                 locations,
                 rawInput,
@@ -662,12 +663,13 @@ export class PiAcpSession {
       case "tool_execution_start": {
         const toolCallId = String((ev as any).toolCallId ?? randomUUID());
         const toolName = String((ev as any).toolName ?? "tool");
-        const args = (ev as any).args;
+        const args = toolArgsFromEvent(ev);
+        const argsObj = args && typeof args === "object" ? (args as Record<string, unknown>) : null;
         let line: number | undefined;
 
         // Capture pre-edit file contents so we can emit a structured ACP diff on completion.
         if (toolName === "edit" || toolName === "write") {
-          const p = typeof args?.path === "string" ? args.path : undefined;
+          const p = typeof argsObj?.path === "string" ? argsObj.path : undefined;
           if (p) {
             const abs = isAbsolute(p) ? p : resolvePath(this.cwd, p);
             try {
@@ -702,6 +704,7 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: "tool_call_update",
             toolCallId,
+            title: toToolTitle(toolName, args),
             status: "in_progress",
             locations,
             rawInput: args,
@@ -1115,6 +1118,11 @@ export class PiAcpSession {
         this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
       });
   }
+}
+
+function toolArgsFromEvent(ev: PiRpcEvent): unknown {
+  const e = ev as Record<string, unknown>;
+  return e.args ?? e.input ?? e.rawInput ?? e.parameters;
 }
 
 function extensionUiType(ev: PiRpcEvent): string {
