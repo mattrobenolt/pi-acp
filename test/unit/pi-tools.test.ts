@@ -48,7 +48,7 @@ test("toToolKind: maps known tool names", () => {
   assert.equal(toToolKind("bash"), "execute");
   assert.equal(toToolKind("find"), "search");
   assert.equal(toToolKind("grep"), "search");
-  assert.equal(toToolKind("websearch"), "search");
+  assert.equal(toToolKind("websearch"), "fetch");
   assert.equal(toToolKind("webfetch"), "fetch");
   assert.equal(toToolKind("unknown_tool"), "other");
 });

@@ -39,6 +39,7 @@ import { listPiSessions, findPiSessionFile, getPiSessionsDir } from "./pi-sessio
 import { normalizePiAssistantText, normalizePiMessageText } from "./translate/pi-messages.js";
 import {
   toolResultToText,
+  toToolContent,
   toToolKind,
   toToolTitle,
   toToolCallLocations,
@@ -1498,9 +1499,10 @@ export class PiAcpAgent implements ACPAgent {
           update: {
             sessionUpdate: "tool_call",
             toolCallId,
-            title: toToolTitle(toolName, args),
+            title: toToolTitle(toolName, args, params.cwd),
             kind: toToolKind(toolName),
             status: "completed",
+            content: toToolContent(toolName, args),
             rawInput: args ?? null,
             rawOutput: m,
             locations,

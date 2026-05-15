@@ -59,7 +59,7 @@ test("PiAcpSession: renders find tools as search without file navigation", async
   );
   assert.ok(start, "expected find tool call");
   assert.equal((start.update as any).kind, "search");
-  assert.equal((start.update as any).title, "find *.json");
+  assert.equal((start.update as any).title, "Find `.` `*.json`");
   assert.equal((start.update as any).locations, undefined);
 });
 
@@ -93,11 +93,11 @@ test("PiAcpSession: renders web tools with search/fetch kinds", async () => {
 
   const search = conn.updates.find((u) => (u.update as any).toolCallId === "search1");
   assert.ok(search, "expected websearch tool call");
-  assert.equal((search.update as any).kind, "search");
-  assert.equal((search.update as any).title, "search web: agent client protocol");
+  assert.equal((search.update as any).kind, "fetch");
+  assert.equal((search.update as any).title, '"agent client protocol"');
 
   const fetch = conn.updates.find((u) => (u.update as any).toolCallId === "fetch1");
   assert.ok(fetch, "expected webfetch tool call");
   assert.equal((fetch.update as any).kind, "fetch");
-  assert.equal((fetch.update as any).title, "fetch: https://agentclientprotocol.com");
+  assert.equal((fetch.update as any).title, "Fetch https://agentclientprotocol.com");
 });

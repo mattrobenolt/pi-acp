@@ -20,6 +20,7 @@ import {
 import { SessionStore } from "./session-store.js";
 import {
   toolResultToText,
+  toToolContent,
   toToolKind,
   toToolTitle,
   toToolCallLocations as sharedToToolCallLocations,
@@ -636,11 +637,12 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: "tool_call",
                 toolCallId,
-                title: toToolTitle(toolName, rawInput),
+                title: toToolTitle(toolName, rawInput, this.cwd),
                 kind: toToolKind(toolName),
                 status,
                 locations,
                 rawInput,
+                content: toToolContent(toolName, rawInput),
                 ...terminalStart(toolName, toolCallId),
               });
             } else {
@@ -649,10 +651,11 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: "tool_call_update",
                 toolCallId,
-                title: toToolTitle(toolName, rawInput),
+                title: toToolTitle(toolName, rawInput, this.cwd),
                 status,
                 locations,
                 rawInput,
+                content: toToolContent(toolName, rawInput),
               });
             }
           }
@@ -698,11 +701,12 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: "tool_call",
             toolCallId,
-            title: toToolTitle(toolName, args),
+            title: toToolTitle(toolName, args, this.cwd),
             kind: toToolKind(toolName),
             status: "in_progress",
             locations,
             rawInput: args,
+            content: toToolContent(toolName, args),
             ...terminalStart(toolName, toolCallId),
           });
         } else {
@@ -711,10 +715,11 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: "tool_call_update",
             toolCallId,
-            title: toToolTitle(toolName, args),
+            title: toToolTitle(toolName, args, this.cwd),
             status: "in_progress",
             locations,
             rawInput: args,
+            content: toToolContent(toolName, args),
           });
         }
 
