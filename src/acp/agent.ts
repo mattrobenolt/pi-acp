@@ -30,6 +30,7 @@ import { promptToPiMessage } from "./translate/prompt.js";
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from "./slash-commands.js";
 import {
   getAgentDir,
+  getConfiguredPackages,
   getEnableSkillCommands,
   getEnabledModels,
   getQuietStartup,
@@ -1471,7 +1472,7 @@ function buildStartupInfo(opts: {
 
   // Prompts
   const promptsItems: string[] = [];
-  const promptsDir = join(process.env.HOME ?? "", ".pi", "agent", "prompts");
+  const promptsDir = join(getAgentDir(), "prompts");
   try {
     const prompts = readdirSync(promptsDir).filter((f) => f.endsWith(".md"));
     for (const f of prompts) promptsItems.push(`/${basename(f, ".md")}`);
@@ -1482,7 +1483,7 @@ function buildStartupInfo(opts: {
 
   // Extensions
   const extItems: string[] = [];
-  const extDir = join(process.env.HOME ?? "", ".pi", "agent", "extensions");
+  const extDir = join(getAgentDir(), "extensions");
   try {
     const exts = readdirSync(extDir).filter((f) => f.endsWith(".ts") || f.endsWith(".js"));
     for (const f of exts) extItems.push(join(extDir, f));
@@ -1490,23 +1491,7 @@ function buildStartupInfo(opts: {
     // ignore
   }
 
-  // Also show npm packages from pi settings (best-effort)
-  try {
-    const settingsPath = join(process.env.HOME ?? "", ".pi", "agent", "settings.json");
-    const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as any;
-    const pkgs: string[] = Array.isArray(settings?.packages) ? settings.packages : [];
-    for (const pkg of pkgs) {
-      const s = String(pkg);
-      if (s.startsWith("npm:")) {
-        // Render a two-line bullet structure using markdown indentation.
-        extItems.push(`${s}\n  - index.ts`);
-      } else {
-        extItems.push(s);
-      }
-    }
-  } catch {
-    // ignore
-  }
+  for (const pkg of getConfiguredPackages(opts.cwd)) extItems.push(pkg);
 
   addSection("Extensions", extItems);
 

@@ -19,7 +19,7 @@ function deepMerge(
   return out;
 }
 
-function readJsonFile(path: string): Record<string, unknown> {
+export function readPiSettingsFile(path: string): Record<string, unknown> {
   try {
     if (!existsSync(path)) return {};
     const raw = readFileSync(path, "utf-8");
@@ -30,12 +30,17 @@ function readJsonFile(path: string): Record<string, unknown> {
   }
 }
 
-function getMergedSettings(cwd: string): Record<string, unknown> {
-  const globalSettingsPath = join(getAgentDir(), "settings.json");
-  const projectSettingsPath = resolve(cwd, ".pi", "settings.json");
+export function getGlobalSettingsPath(): string {
+  return join(getAgentDir(), "settings.json");
+}
 
-  const global = readJsonFile(globalSettingsPath);
-  const project = readJsonFile(projectSettingsPath);
+export function getProjectSettingsPath(cwd: string): string {
+  return resolve(cwd, ".pi", "settings.json");
+}
+
+export function getMergedSettings(cwd: string): Record<string, unknown> {
+  const global = readPiSettingsFile(getGlobalSettingsPath());
+  const project = readPiSettingsFile(getProjectSettingsPath(cwd));
   return deepMerge(global, project);
 }
 
@@ -79,12 +84,25 @@ export function getQuietStartup(cwd: string): boolean {
   return false;
 }
 
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function unique(items: string[]): string[] {
+  return [...new Set(items)];
+}
+
+export function getConfiguredPackages(cwd: string): string[] {
+  const global = readPiSettingsFile(getGlobalSettingsPath());
+  const project = readPiSettingsFile(getProjectSettingsPath(cwd));
+  return unique([...stringArray(global.packages), ...stringArray(project.packages)]);
+}
+
 export function getEnabledModels(cwd: string): string[] | null {
   const merged = getMergedSettings(cwd);
   const enabledModels = merged.enabledModels;
 
-  if (!Array.isArray(enabledModels)) return null;
-
-  const models = enabledModels.map((model) => String(model).trim()).filter(Boolean);
+  const models = stringArray(enabledModels);
   return models.length ? models : null;
 }
