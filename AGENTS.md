@@ -1,79 +1,123 @@
-# pi-acp (ACP adapter for pi-coding-agent)
+# pi-acp
 
-This repository implements an **Agent Client Protocol (ACP)** adapter for **pi** (`@earendil-works/pi-coding-agent`) without modifying pi.
+This repo is Matt's Zed-focused ACP adapter for `pi` (`@earendil-works/pi-coding-agent`). Treat it as an owned fork, not as a thin upstream mirror.
 
-- ACP side: **JSON-RPC 2.0 over stdio** using `@agentclientprotocol/sdk` (TypeScript)
-- Pi side: spawn `pi --mode rpc` and communicate via **newline-delimited JSON** over stdio
+`pi-acp` speaks ACP JSON-RPC 2.0 over stdio to Zed and spawns `pi --mode rpc` behind it. The job is to make pi feel native in Zed without modifying pi itself.
 
-## Architecture (MVP)
+## Current architecture
 
-### 1 ACP session ↔ 1 pi subprocess
+- ACP side: `@agentclientprotocol/sdk`, stdio JSON-RPC.
+- pi side: one `pi --mode rpc` subprocess per ACP session, newline-delimited JSON over stdio.
+- Core adapter code lives in `src/acp/*`.
+- pi process/RPC handling lives in `src/pi-rpc/*`.
+- Smoke/eval helpers live in `scripts/*`.
+- Tests live in `test/*`.
 
-Pi RPC mode is effectively single-session, so the adapter maps:
+Session mapping is adapter-managed. pi stores its own session JSONL files; pi-acp stores small metadata under `~/.pi/pi-acp` unless `PI_ACP_DIR` overrides it.
 
-- `session/new` → spawn a dedicated `pi --mode rpc` process
-- `session/prompt` → send `{type:"prompt"}` to that process and stream events back as `session/update`
-- `session/cancel` → send `{type:"abort"}`
+## Product stance
 
-### ACP server wiring (modeled after opencode)
+Zed is the compatibility baseline. Other ACP clients may work, but don't bend clean Zed behavior around hypothetical clients.
 
-Use `@agentclientprotocol/sdk`:
+Do not cargo-cult ACP features pi cannot honestly support. In particular:
 
-- `ndJsonStream(input, output)` to speak ACP over stdio
-- `new AgentSideConnection((conn) => new PiAcpAgent(conn, config), stream)`
+- Do not implement fake ACP filesystem delegation. pi already reads/writes locally.
+- Do not implement fake ACP terminal delegation. pi already executes locally. Bash cards may use Zed terminal-output metadata for rendering, but Zed is not executing those commands.
+- Do not implement fake NES/autocomplete. pi is a turn/session/tool agent, not a next-edit suggestion engine.
+- Do not advertise unsupported capabilities just to light up UI.
 
-## Implementation constraints / decisions
+If Zed has a feature only through internal native-agent hooks, call that out instead of pretending pi-acp can support it through ACP. Editing previous messages is currently in that bucket: Zed wires it to internal `AgentConnection::truncate()`, not an ACP method.
 
-- Do **not** implement ACP client-side FS/terminal delegation in MVP. Pi already reads/writes and executes locally.
-- Ignore `mcpServers` for MVP (accept in params, store in session state).
-- Stream all pi assistant output as ACP `agent_message_chunk` initially.
-- Tool events: map pi tool execution events to ACP `tool_call` / `tool_call_update` (as text content).
+## Tool rendering
 
-## Dev workflow (to be filled once scaffold exists)
+Tool card fidelity matters. Zed-visible polish is part of the adapter, not fluff.
 
-- Install deps: `npm install`
-- Run in dev: `npm run dev`
-- Build: `npm run build`
-- Smoke test (stdio): `npm run smoke`
-- Lint: `npm run lint`
-- Test: `npm run test`
+Keep `src/acp/translate/pi-tools.ts` as the main place for semantic tool display mapping:
 
-## Manual testing notes
+- `bash` / `term` -> execute
+- `read` / `ls` -> read
+- `write` / `edit` -> edit, with structured diffs when possible
+- `find` / `grep` -> search, no fake file locations for search scope
+- `webfetch` / `websearch` -> fetch/search-style cards as currently mapped
+- `subagent` / `todo` -> think where appropriate
 
-Once the adapter runs, it should behave like an ACP agent on stdio.
+Bash output uses Zed's `_meta.terminal_output` convention. pi may emit cumulative partial output; send terminal deltas, not repeated full output.
 
-Quick sanity test (example):
+Long-term, semantic tool display metadata belongs in pi core/tool registry. Until pi exposes that, adapter-side mapping is acceptable.
 
-```bashN
-# Send initialize request via stdin (exact fields depend on ACP SDK version)
-# echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}' | node dist/index.js
+## Session behavior
+
+Supported lifecycle:
+
+- `session/new` starts a pi RPC subprocess.
+- `session/prompt` sends prompts to pi and streams updates.
+- `session/cancel` aborts the current pi turn.
+- `session/close` releases adapter state.
+- `session/load` replays a stored pi session into Zed.
+- `session/resume` reattaches without replaying old messages.
+- `session/fork` copies a pi session file into a new independent session.
+
+Be careful with turn completion. `proc.prompt()` resolving means pi accepted the prompt; it does not mean the assistant turn is complete. Completion is driven by pi `agent_end`, with only narrow fallback behavior for older/fake streams.
+
+## Commands and extension UI
+
+Slash commands are a mix of adapter built-ins, file prompts, skills, and pi RPC commands. Preserve that separation.
+
+Extension UI is intentionally partial:
+
+- `notify` -> assistant text
+- `select` / `confirm` -> ACP permission prompts
+- single-line `input` -> ACP elicitation when available
+- status/widget/title/editor UI -> ignore or degrade, don't wedge the turn
+
+## Development
+
+Use npm scripts from this repo:
+
+```sh
+npm run fmt
+npm run check
+npm run lint
+npm run test
+npm run smoke:eval
 ```
 
-For real validation, test with an ACP client (e.g. Zed external agent).
+Normal validation after code edits:
 
-## Coding guidelines
+```sh
+npm run fmt && npm run check && npm run test && npm run smoke:eval
+```
 
-- Keep ACP protocol handling in `src/acp/*`.
-- Keep pi RPC subprocess logic in `src/pi-rpc/*`.
-- Prefer small translation functions (pi event → ACP session/update) with unit tests.
-- Be strict about streaming and process cleanup (handle exit, drain stdout/stderr, timeouts).
-- Avoid producing unnecessary comments! Use comments sparingly to explain non-obvious decisions, not to narrate code.
-- Avoid using `any` in TypeScript; prefer explicit types and interfaces. Only use `any` when absolutely necessary (e.g. for untyped external data).
+`npm run smoke:eval` builds the adapter and runs a fake-pi ACP harness. It does not require a real pi install.
 
-## Validation
+## Style
 
-- After making code edits, run formatting before finishing the task. Use `npm run format` when it is safe to format the whole worktree; otherwise use the narrowest safe formatter command for the files you touched.
-- If formatting is skipped or fails, say so explicitly in the final response.
+Keep changes small and direct. This is infrastructure glue, not an enterprise middleware pageant.
+
+- Prefer small translation helpers with tests.
+- Preserve streaming/order guarantees.
+- Be explicit about unsupported behavior.
+- Avoid unnecessary comments; comment protocol quirks and non-obvious Zed/pi behavior.
+- Avoid `any` where it is easy to avoid, but don't contort protocol-boundary code into type cosplay.
 
 ## Source control
 
-- **DO NOT** commit unless explicitly asked!
+Matt has allowed normal stage/commit/push flow in this repo. Do not commit unrelated personal/runtime state. Keep generated/vendor/session noise out of commits.
 
-## Client information
+Runtime/debug paths to avoid committing:
 
-- Current ACP client is Zed
+- `node_modules/`
+- `dist/` unless explicitly needed for a release artifact
+- `.direnv/`
+- `tmp/`
+- `~/.pi/pi-acp/*`
+- pi session JSONL files
 
-## References
+## Local references
 
-- Local ACP repo with protocol documentation and specs: `~/Dev/learning/agent-client-protocol`
-- Local Zed repo `~/Dev/learning/zed/zed`
+Use the actual local checkouts when needed:
+
+- Zed source: `/Users/matt/code/zed`
+- ACP docs/spec checkout may or may not exist locally; prefer web docs or repo discovery instead of assuming an old `~/Dev/learning/...` path.
+
+For pi itself, read the installed pi docs/examples under Matt's pi agent install when working on pi extension/tool APIs.
