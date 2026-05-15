@@ -4,13 +4,13 @@ ACP ([Agent Client Protocol](https://agentclientprotocol.com/overview/introducti
 
 `pi-acp` speaks **ACP JSON-RPC 2.0 over stdio** to an ACP client and spawns `pi --mode rpc` behind it. Zed is the target client. Other ACP clients may work, but this repo does not optimize for generic compatibility when Zed needs specific behavior.
 
-This repo started as a fork of `svkozak/pi-acp`, but it has diverged enough that it should be treated as its own adapter now. The MIT license attribution is preserved in `LICENSE`.
+This repo started as a fork of `svkozak/pi-acp`, but it has diverged enough that it should be treated as its own adapter. The MIT license attribution is preserved in `LICENSE`.
 
 ## Status
 
-Practical, Zed-focused, and intentionally not upstream-compatible ceremony. The adapter tracks pi's RPC mode instead of reimplementing pi, so the supported surface is the useful intersection of Zed, ACP, and `pi --mode rpc`.
+Practical, Zed-focused, and intentionally not upstream-compatible. The adapter tracks pi's RPC mode instead of reimplementing pi, so the supported surface is the useful intersection of Zed, ACP, and `pi --mode rpc`.
 
-Expect changes as pi, ACP, and Zed move. This is not the published ACP Registry adapter and should not be installed using upstream registry/npm instructions unless this fork is explicitly published there later.
+Expect changes as pi, ACP, and Zed move.
 
 ## Features
 
@@ -57,16 +57,34 @@ Install pi separately if needed:
 npm install -g @earendil-works/pi-coding-agent
 ```
 
-## Install from this repo
+## Installation
 
-Build the adapter:
+Add to your Zed `settings.json` (`cmd+shift+p` → "zed: open settings"):
+
+```json
+{
+  "agent_servers": {
+    "pi": {
+      "type": "custom",
+      "command": "npx",
+      "args": ["@mattrobenolt/pi-acp@latest"]
+    }
+  }
+}
+```
+
+This runs the adapter via npx on each session start. No global install needed.
+
+## Building from source
 
 ```bash
+git clone https://github.com/mattrobenolt/pi-acp
+cd pi-acp
 npm install
 npm run build
 ```
 
-Point Zed at the built file in `settings.json`:
+Then point Zed at the built output:
 
 ```json
 {
@@ -74,14 +92,13 @@ Point Zed at the built file in `settings.json`:
     "pi": {
       "type": "custom",
       "command": "node",
-      "args": ["/Users/matt/code/scratch/pi-acp/dist/index.js"],
-      "env": {}
+      "args": ["/path/to/pi-acp/dist/index.js"]
     }
   }
 }
 ```
 
-For development, point Zed at `tsx` if you want live TypeScript execution instead of rebuilding:
+For live TypeScript execution during development:
 
 ```json
 {
@@ -89,14 +106,11 @@ For development, point Zed at `tsx` if you want live TypeScript execution instea
     "pi": {
       "type": "custom",
       "command": "./node_modules/.bin/tsx",
-      "args": ["/Users/matt/code/scratch/pi-acp/src/index.ts"],
-      "env": {}
+      "args": ["/path/to/pi-acp/src/index.ts"]
     }
   }
 }
 ```
-
-Use the absolute path for `command` if Zed does not launch from this repo. The built `dist/index.js` path is the safer default.
 
 ## Environment variables
 
@@ -114,10 +128,10 @@ Example:
   "agent_servers": {
     "pi": {
       "type": "custom",
-      "command": "node",
-      "args": ["/Users/matt/code/scratch/pi-acp/dist/index.js"],
+      "command": "npx",
+      "args": ["@mattrobenolt/pi-acp@latest"],
       "env": {
-        "PI_ACP_DEBUG_LOG": "/Users/matt/.pi/pi-acp/debug.log"
+        "PI_ACP_DEBUG_LOG": "/tmp/pi-acp.jsonl"
       }
     }
   }
