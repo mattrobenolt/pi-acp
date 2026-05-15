@@ -136,7 +136,7 @@ test("PiAcpSession: emits tool locations from pi path args", async () => {
 
   assert.equal(conn.updates.length, 1);
   assert.equal(conn.updates[0]!.update.sessionUpdate, "tool_call");
-  assert.equal((conn.updates[0]!.update as any).title, "read: src/acp/session.ts");
+  assert.equal((conn.updates[0]!.update as any).title, "Read src/acp/session.ts");
   assert.deepEqual((conn.updates[0]!.update as any).locations, [
     { path: `${process.cwd()}/src/acp/session.ts` },
   ]);

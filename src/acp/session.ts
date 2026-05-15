@@ -254,6 +254,7 @@ export class PiAcpSession {
   // Some pi events can arrive out of order (e.g. late toolcall_* deltas after execution starts),
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, "pending" | "in_progress">();
+  private currentToolNames = new Map<string, string>();
 
   // pi can emit multiple `turn_end` events for a single user prompt (e.g. after tool_use).
   // The overall agent loop completes when `agent_end` is emitted.
@@ -631,6 +632,7 @@ export class PiAcpSession {
 
             if (!existingStatus) {
               this.currentToolCalls.set(toolCallId, "pending");
+              this.currentToolNames.set(toolCallId, toolName);
               this.emit({
                 sessionUpdate: "tool_call",
                 toolCallId,
@@ -639,6 +641,7 @@ export class PiAcpSession {
                 status,
                 locations,
                 rawInput,
+                ...terminalStart(toolName, toolCallId),
               });
             } else {
               // Best-effort: keep rawInput updated while args are streaming.
@@ -691,6 +694,7 @@ export class PiAcpSession {
         // If we already surfaced the tool call while the model streamed it, just transition.
         if (!this.currentToolCalls.has(toolCallId)) {
           this.currentToolCalls.set(toolCallId, "in_progress");
+          this.currentToolNames.set(toolCallId, toolName);
           this.emit({
             sessionUpdate: "tool_call",
             toolCallId,
@@ -699,9 +703,11 @@ export class PiAcpSession {
             status: "in_progress",
             locations,
             rawInput: args,
+            ...terminalStart(toolName, toolCallId),
           });
         } else {
           this.currentToolCalls.set(toolCallId, "in_progress");
+          this.currentToolNames.set(toolCallId, toolName);
           this.emit({
             sessionUpdate: "tool_call_update",
             toolCallId,
@@ -730,6 +736,7 @@ export class PiAcpSession {
             ? ([{ type: "content", content: { type: "text", text } }] satisfies ToolCallContent[])
             : undefined,
           rawOutput: partial,
+          ...terminalOutput(this.currentToolNames.get(toolCallId), toolCallId, text),
         });
         break;
       }
@@ -784,9 +791,13 @@ export class PiAcpSession {
           status: isError ? "failed" : "completed",
           content,
           rawOutput: result,
+          ...terminalOutput(this.currentToolNames.get(toolCallId), toolCallId, text, {
+            exitCode: isError ? 1 : 0,
+          }),
         });
 
         this.currentToolCalls.delete(toolCallId);
+        this.currentToolNames.delete(toolCallId);
         this.editSnapshots.delete(toolCallId);
         break;
       }
@@ -1119,6 +1130,40 @@ export class PiAcpSession {
         this.proc.sendExtensionUiResponse(requestId, { cancelled: true });
       });
   }
+}
+
+function terminalStart(
+  toolName: string,
+  toolCallId: string,
+): { content?: ToolCallContent[]; _meta?: Record<string, unknown> } {
+  if (toolName !== "bash") return {};
+  return {
+    content: [{ type: "terminal", terminalId: toolCallId }],
+    _meta: { terminal_info: { terminal_id: toolCallId } },
+  };
+}
+
+function terminalOutput(
+  toolName: string | undefined,
+  toolCallId: string,
+  data: string,
+  exit?: { exitCode: number; signal?: string | null },
+): { _meta?: Record<string, unknown> } {
+  if (toolName !== "bash" || (!data && !exit)) return {};
+  return {
+    _meta: {
+      ...(data ? { terminal_output: { terminal_id: toolCallId, data } } : {}),
+      ...(exit
+        ? {
+            terminal_exit: {
+              terminal_id: toolCallId,
+              exit_code: exit.exitCode,
+              signal: exit.signal ?? null,
+            },
+          }
+        : {}),
+    },
+  };
 }
 
 function toolArgsFromEvent(ev: PiRpcEvent): unknown {
