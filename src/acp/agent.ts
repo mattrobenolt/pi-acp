@@ -127,6 +127,39 @@ export class PiAcpAgent implements ACPAgent {
     void _config;
   }
 
+  private async ensureSession(sessionId: string): Promise<ReturnType<SessionManager["get"]>> {
+    const existing = (this.sessions as any).maybeGet?.(sessionId);
+    if (existing) return existing;
+    if (!(this.sessions as any).maybeGet) return this.sessions.get(sessionId);
+
+    const stored = this.store.get(sessionId);
+    if (!stored?.sessionFile) throw RequestError.invalidParams(`Unknown sessionId: ${sessionId}`);
+
+    const proc = await PiRpcProcess.spawn({
+      cwd: stored.cwd,
+      sessionPath: stored.sessionFile,
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+    });
+
+    const session = this.sessions.getOrCreate(sessionId, {
+      cwd: stored.cwd,
+      mcpServers: [],
+      conn: this.conn,
+      proc,
+      fileCommands: loadSlashCommands(stored.cwd),
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+    });
+
+    this.lastSessionCwd = stored.cwd;
+    this.store.upsert({
+      sessionId,
+      cwd: stored.cwd,
+      sessionFile: stored.sessionFile,
+    });
+
+    return session;
+  }
+
   private async maybeSetInitialTitle(
     session: ReturnType<SessionManager["get"]>,
     message: string,
@@ -396,7 +429,7 @@ export class PiAcpAgent implements ACPAgent {
       prompt: params.prompt,
     });
 
-    const session = this.sessions.get(params.sessionId);
+    const session = await this.ensureSession(params.sessionId);
 
     const { message, images } = promptToPiMessage(params.prompt);
 
@@ -884,7 +917,7 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    const session = this.sessions.get(params.sessionId);
+    const session = await this.ensureSession(params.sessionId);
     await session.cancel();
   }
 
@@ -1138,7 +1171,7 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
-    const session = this.sessions.get(params.sessionId);
+    const session = await this.ensureSession(params.sessionId);
 
     // Accept either:
     //  - "provider/model" (preferred, matches how we advertise)
@@ -1172,7 +1205,7 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
-    const session = this.sessions.get(params.sessionId);
+    const session = await this.ensureSession(params.sessionId);
 
     const mode = String(params.modeId);
     if (!isThinkingLevel(mode)) {
