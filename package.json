@@ -8,15 +8,15 @@
     "agent-client-protocol",
     "pi-coding-agent"
   ],
-  "homepage": "https://github.com/svkozak/pi-acp#readme",
+  "homepage": "https://github.com/mattrobenolt/pi-acp#readme",
   "bugs": {
-    "url": "https://github.com/svkozak/pi-acp/issues"
+    "url": "https://github.com/mattrobenolt/pi-acp/issues"
   },
   "license": "MIT",
-  "author": "Sergii Kozak <svkozak@gmail.com>",
+  "author": "Matt Robenolt",
   "repository": {
     "type": "git",
-    "url": "https://github.com/svkozak/pi-acp.git"
+    "url": "https://github.com/mattrobenolt/pi-acp.git"
   },
   "bin": {
     "pi-acp": "dist/index.js"
