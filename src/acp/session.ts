@@ -733,15 +733,20 @@ export class PiAcpSession {
         const partial = (ev as any).partialResult;
         const text = toolResultToText(partial);
 
+        const toolName = this.currentToolNames.get(toolCallId);
+        const terminal = terminalOutput(toolName, toolCallId, text);
+
         this.emit({
           sessionUpdate: "tool_call_update",
           toolCallId,
           status: "in_progress",
-          content: text
-            ? ([{ type: "content", content: { type: "text", text } }] satisfies ToolCallContent[])
-            : undefined,
+          content:
+            terminal.content ??
+            (text
+              ? ([{ type: "content", content: { type: "text", text } }] satisfies ToolCallContent[])
+              : undefined),
           rawOutput: partial,
-          ...terminalOutput(this.currentToolNames.get(toolCallId), toolCallId, text),
+          ...terminal,
         });
         break;
       }
@@ -790,15 +795,18 @@ export class PiAcpSession {
           ] satisfies ToolCallContent[];
         }
 
+        const toolName = this.currentToolNames.get(toolCallId);
+        const terminal = terminalOutput(toolName, toolCallId, text, {
+          exitCode: isError ? 1 : 0,
+        });
+
         this.emit({
           sessionUpdate: "tool_call_update",
           toolCallId,
           status: isError ? "failed" : "completed",
-          content,
+          content: terminal.content ?? content,
           rawOutput: result,
-          ...terminalOutput(this.currentToolNames.get(toolCallId), toolCallId, text, {
-            exitCode: isError ? 1 : 0,
-          }),
+          ...terminal,
         });
 
         this.currentToolCalls.delete(toolCallId);
@@ -1153,10 +1161,12 @@ function terminalOutput(
   toolCallId: string,
   data: string,
   exit?: { exitCode: number; signal?: string | null },
-): { _meta?: Record<string, unknown> } {
+): { content?: ToolCallContent[]; _meta?: Record<string, unknown> } {
   if (toolName !== "bash" || (!data && !exit)) return {};
   return {
+    content: [{ type: "terminal", terminalId: toolCallId }],
     _meta: {
+      terminal_info: { terminal_id: toolCallId },
       ...(data ? { terminal_output: { terminal_id: toolCallId, data } } : {}),
       ...(exit
         ? {

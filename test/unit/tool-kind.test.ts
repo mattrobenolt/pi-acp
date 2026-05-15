@@ -30,6 +30,27 @@ test("PiAcpSession: renders bash tools as execute kind", async () => {
   );
   assert.ok(start, "expected bash tool call");
   assert.equal((start.update as any).kind, "execute");
+  assert.deepEqual((start.update as any).content, [{ type: "terminal", terminalId: "t1" }]);
+  assert.deepEqual((start.update as any)._meta, { terminal_info: { terminal_id: "t1" } });
+
+  proc.emit({
+    type: "tool_execution_update",
+    toolCallId: "t1",
+    toolName: "bash",
+    partialResult: { content: [{ type: "text", text: "\u001b[31mred\u001b[0m\n" }] },
+  });
+
+  await new Promise((r) => setTimeout(r, 0));
+
+  const output = conn.updates.find(
+    (u) =>
+      (u.update as any).toolCallId === "t1" &&
+      u.update.sessionUpdate === "tool_call_update" &&
+      (u.update as any)._meta?.terminal_output,
+  );
+  assert.ok(output, "expected terminal output update");
+  assert.deepEqual((output.update as any).content, [{ type: "terminal", terminalId: "t1" }]);
+  assert.equal((output.update as any)._meta.terminal_output.data, "\u001b[31mred\u001b[0m\n");
 });
 
 test("PiAcpSession: renders find tools as search without file navigation", async () => {
