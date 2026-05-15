@@ -1,6 +1,6 @@
 {
-  "name": "pi-acp",
-  "version": "0.0.27",
+  "name": "@mattrobenolt/pi-acp",
+  "version": "0.1.0-rc.0",
   "description": "ACP adapter for pi coding agent",
   "keywords": [
     "acp",
@@ -16,7 +16,7 @@
   "author": "Matt Robenolt",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mattrobenolt/pi-acp.git"
+    "url": "git+https://github.com/mattrobenolt/pi-acp.git"
   },
   "bin": {
     "pi-acp": "dist/index.js"
