@@ -11,7 +11,7 @@ export function toToolTitle(toolName: string, args: unknown): string {
     }
     case "read": {
       const path = typeof a?.path === "string" ? a.path : undefined;
-      return path ? `read: ${path}` : "read";
+      return path ? `Read ${path}` : "read";
     }
     case "find": {
       const pattern = typeof a?.pattern === "string" ? a.pattern : undefined;
@@ -24,7 +24,7 @@ export function toToolTitle(toolName: string, args: unknown): string {
     }
     case "ls": {
       const path = typeof a?.path === "string" ? a.path : undefined;
-      return path ? `ls: ${path}` : "ls";
+      return path ? `ls ${path}` : "ls";
     }
     case "webfetch": {
       const url = typeof a?.url === "string" ? a.url : undefined;
@@ -62,11 +62,11 @@ export function toToolTitle(toolName: string, args: unknown): string {
     }
     case "write": {
       const path = typeof a?.path === "string" ? a.path : undefined;
-      return path ? `write: ${path}` : "write";
+      return path ? `Write ${path}` : "write";
     }
     case "edit": {
       const path = typeof a?.path === "string" ? a.path : undefined;
-      return path ? `edit: ${path}` : "edit";
+      return path ? `Edit ${path}` : "edit";
     }
     default:
       return toolName;
@@ -102,7 +102,8 @@ export function toToolCallLocations(
   line?: number,
   toolName?: string,
 ): ToolCallLocation[] | undefined {
-  if (toolName === "find" || toolName === "grep" || toolName === "websearch") return undefined;
+  if (toolName === "find" || toolName === "grep" || toolName === "websearch" || toolName == "ls")
+    return undefined;
 
   const path =
     typeof (args as { path?: unknown } | null | undefined)?.path === "string"
