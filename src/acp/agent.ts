@@ -20,6 +20,7 @@ import {
   type SetSessionModeRequest,
   type SetSessionModeResponse,
   type StopReason,
+  type UsageUpdate,
 } from "@agentclientprotocol/sdk";
 import { getAuthMethods } from "./auth.js";
 import { debugLog, SessionManager } from "./session.js";
@@ -159,6 +160,31 @@ export class PiAcpAgent implements ACPAgent {
     });
 
     return session;
+  }
+
+  /**
+   * Best-effort: fetch session stats (and optionally state) from pi, build a
+   * usage_update, and send it to the client. Errors are silently swallowed —
+   * usage telemetry is never worth breaking a session over.
+   */
+  private async maybeEmitUsageUpdate(
+    sessionId: string,
+    proc: PiRpcProcess,
+    preState?: unknown,
+  ): Promise<void> {
+    try {
+      const [stats, state] = await Promise.all([
+        proc.getSessionStats(),
+        preState !== undefined ? Promise.resolve(preState) : proc.getState(),
+      ]);
+
+      const update = buildUsageUpdate(stats, state);
+      if (!update) return;
+
+      await this.conn.sessionUpdate({ sessionId, update });
+    } catch {
+      // Best-effort only.
+    }
   }
 
   private async maybeSetInitialTitle(
@@ -926,6 +952,9 @@ export class PiAcpAgent implements ACPAgent {
       rawResult: result,
     });
 
+    // Emit usage telemetry after each prompt turn (best-effort, non-blocking).
+    void this.maybeEmitUsageUpdate(params.sessionId, session.proc);
+
     return { stopReason };
   }
 
@@ -1157,6 +1186,10 @@ export class PiAcpAgent implements ACPAgent {
       },
     });
 
+    // Emit usage telemetry for the loaded session (best-effort, non-blocking).
+    // Pass the already-fetched state to avoid an extra RPC round-trip.
+    void this.maybeEmitUsageUpdate(session.sessionId, proc);
+
     // Advertise slash commands after the response so the client knows the session exists.
     setTimeout(() => {
       void (async () => {
@@ -1250,6 +1283,55 @@ export class PiAcpAgent implements ACPAgent {
 
     return {};
   }
+}
+
+/**
+ * Build an ACP UsageUpdate from pi session stats and state.
+ * Returns null if there's not enough data to emit a meaningful update.
+ */
+export function buildUsageUpdate(
+  stats: unknown,
+  state: unknown,
+): (UsageUpdate & { sessionUpdate: "usage_update" }) | null {
+  const s = stats && typeof stats === "object" ? (stats as Record<string, unknown>) : null;
+  const st = state && typeof state === "object" ? (state as Record<string, unknown>) : null;
+
+  if (!s) return null;
+
+  const tokens =
+    s["tokens"] && typeof s["tokens"] === "object"
+      ? (s["tokens"] as Record<string, unknown>)
+      : null;
+
+  // "used" = tokens currently filling the context window.
+  // Best proxy: input tokens (what's in the context window on the input side).
+  // Fall back to total if input is unavailable.
+  const inputTokens = typeof tokens?.["input"] === "number" ? (tokens["input"] as number) : null;
+  const totalTokens = typeof tokens?.["total"] === "number" ? (tokens["total"] as number) : null;
+  const used = inputTokens ?? totalTokens ?? null;
+
+  if (used === null) return null;
+
+  // "size" = model context window limit.
+  const model =
+    st?.["model"] && typeof st["model"] === "object"
+      ? (st["model"] as Record<string, unknown>)
+      : null;
+  const contextWindow =
+    typeof model?.["contextWindow"] === "number" ? (model["contextWindow"] as number) : 0;
+
+  // Cost (optional). Pi reports cost as a plain number (USD).
+  const rawCost = typeof s["cost"] === "number" ? (s["cost"] as number) : null;
+  const cost = rawCost !== null ? { amount: rawCost, currency: "USD" } : null;
+
+  const update: UsageUpdate & { sessionUpdate: "usage_update" } = {
+    sessionUpdate: "usage_update",
+    size: contextWindow,
+    used,
+    ...(cost !== null ? { cost } : {}),
+  };
+
+  return update;
 }
 
 function buildSessionMetadata(opts: {
