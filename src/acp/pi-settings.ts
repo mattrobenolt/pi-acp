@@ -73,3 +73,13 @@ export function getQuietStartup(cwd: string): boolean {
 
   return false
 }
+
+export function getEnabledModels(cwd: string): string[] | null {
+  const merged = getMergedSettings(cwd)
+  const enabledModels = merged.enabledModels
+
+  if (!Array.isArray(enabledModels)) return null
+
+  const models = enabledModels.map(model => String(model).trim()).filter(Boolean)
+  return models.length ? models : null
+}

@@ -28,7 +28,7 @@ import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi
 import { toolResultToText } from './translate/pi-tools.js'
 import { promptToPiMessage } from './translate/prompt.js'
 import { loadSlashCommands, parseCommandArgs, toAvailableCommands } from './slash-commands.js'
-import { getAgentDir, getEnableSkillCommands, getQuietStartup } from './pi-settings.js'
+import { getAgentDir, getEnableSkillCommands, getEnabledModels, getQuietStartup } from './pi-settings.js'
 import { toAvailableCommandsFromPiGetCommands } from './pi-commands.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { isAbsolute } from 'node:path'
@@ -36,6 +36,7 @@ import { existsSync, readFileSync, realpathSync, readdirSync, statSync, unlinkSy
 import type { AvailableCommand } from '@agentclientprotocol/sdk'
 import { join, dirname, basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 
 type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 
@@ -247,7 +248,7 @@ export class PiAcpAgent implements ACPAgent {
       )
     }
 
-    const models = await getModelState(session.proc, { state, availableModels })
+    const models = await getModelState(session.proc, params.cwd, { state, availableModels })
     const thinking = await getThinkingState(session.proc, { state })
 
     const quietStartup = getQuietStartup(params.cwd)
@@ -327,7 +328,7 @@ export class PiAcpAgent implements ACPAgent {
     debugLog('agent.newSession.return', {
       sessionId: session.sessionId,
       cwd: params.cwd,
-      hasStartupInfo: Boolean(preludeText),
+      hasStartupInfo: Boolean(preludeText)
     })
 
     return response
@@ -342,7 +343,7 @@ export class PiAcpAgent implements ACPAgent {
   async prompt(params: PromptRequest): Promise<PromptResponse> {
     debugLog('agent.prompt.enter', {
       sessionId: params.sessionId,
-      prompt: params.prompt,
+      prompt: params.prompt
     })
 
     const session = this.sessions.get(params.sessionId)
@@ -352,7 +353,7 @@ export class PiAcpAgent implements ACPAgent {
     debugLog('agent.prompt.normalized', {
       sessionId: params.sessionId,
       message,
-      imageCount: images.length,
+      imageCount: images.length
     })
 
     // Built-in ACP slash command handling (headless-friendly subset).
@@ -801,7 +802,7 @@ export class PiAcpAgent implements ACPAgent {
 
     debugLog('agent.prompt.session_result', {
       sessionId: params.sessionId,
-      result,
+      result
     })
 
     // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
@@ -812,7 +813,7 @@ export class PiAcpAgent implements ACPAgent {
     debugLog('agent.prompt.return', {
       sessionId: params.sessionId,
       stopReason,
-      rawResult: result,
+      rawResult: result
     })
 
     return { stopReason }
@@ -856,7 +857,7 @@ export class PiAcpAgent implements ACPAgent {
     debugLog('agent.loadSession.enter', {
       sessionId: params.sessionId,
       cwd: params.cwd,
-      mcpServers: params.mcpServers?.length ?? 0,
+      mcpServers: params.mcpServers?.length ?? 0
     })
 
     if (!isAbsolute(params.cwd)) {
@@ -884,7 +885,7 @@ export class PiAcpAgent implements ACPAgent {
       storedExists,
       scannedSessionFile: scannedSessionFile ?? null,
       resolvedSessionFile: sessionFile ?? null,
-      usedStored: storedExists,
+      usedStored: storedExists
     })
 
     if (!sessionFile) {
@@ -934,7 +935,7 @@ export class PiAcpAgent implements ACPAgent {
 
     debugLog('agent.loadSession.replay.begin', {
       sessionId: params.sessionId,
-      messageCount: messages.length,
+      messageCount: messages.length
     })
 
     for (const m of messages) {
@@ -968,7 +969,7 @@ export class PiAcpAgent implements ACPAgent {
 
       if (role === 'toolResult') {
         const toolName = String((m as any)?.toolName ?? 'tool')
-        const toolCallId = String((m as any)?.toolCallId ?? crypto.randomUUID())
+        const toolCallId = String((m as any)?.toolCallId ?? randomUUID())
         const isError = Boolean((m as any)?.isError)
 
         // Create a synthetic ACP tool call to render historic tool usage.
@@ -999,7 +1000,7 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const models = await getModelState(proc)
+    const models = await getModelState(proc, params.cwd)
     const thinking = await getThinkingState(proc)
 
     const response = {
@@ -1016,7 +1017,7 @@ export class PiAcpAgent implements ACPAgent {
       sessionId: params.sessionId,
       messageCount: messages.length,
       hasModels: Boolean(models),
-      currentModeId: thinking.currentModeId,
+      currentModeId: thinking.currentModeId
     })
 
     // Advertise slash commands after the response so the client knows the session exists.
@@ -1154,8 +1155,57 @@ async function getThinkingState(
   }
 }
 
+function stripThinkingSuffix(pattern: string): string {
+  const colon = pattern.lastIndexOf(':')
+  if (colon === -1) return pattern
+
+  const suffix = pattern.slice(colon + 1)
+  return isThinkingLevel(suffix) ? pattern.slice(0, colon) : pattern
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`, 'i')
+}
+
+function matchesEnabledModel(model: { provider: string; id: string; name?: string }, pattern: string): boolean {
+  const normalized = stripThinkingSuffix(pattern).trim()
+  if (!normalized) return false
+
+  const fullId = `${model.provider}/${model.id}`
+  const candidates = [fullId, model.id, model.name ?? '']
+
+  if (normalized.includes('*') || normalized.includes('?')) {
+    const re = globToRegExp(normalized)
+    return candidates.some(candidate => re.test(candidate))
+  }
+
+  return candidates.some(candidate => candidate.toLowerCase() === normalized.toLowerCase())
+}
+
+function filterEnabledModels(models: any[], cwd: string): any[] {
+  const enabledModels = getEnabledModels(cwd)
+  if (!enabledModels) return models
+
+  const filtered = models.filter(model =>
+    enabledModels.some(pattern =>
+      matchesEnabledModel(
+        {
+          provider: String(model?.provider ?? '').trim(),
+          id: String(model?.id ?? '').trim(),
+          name: typeof model?.name === 'string' ? model.name : undefined
+        },
+        pattern
+      )
+    )
+  )
+
+  return filtered.length ? filtered : models
+}
+
 async function getModelState(
   proc: PiRpcProcess,
+  cwd: string,
   pre?: { state?: any | null; availableModels?: any | null }
 ): Promise<{
   availableModels: ModelInfo[]
@@ -1174,7 +1224,7 @@ async function getModelState(
       }
     })())
 
-  const models: any[] = Array.isArray(data?.models) ? data.models : []
+  const models: any[] = filterEnabledModels(Array.isArray(data?.models) ? data.models : [], cwd)
   availableModels = models
     .map(m => {
       const provider = String(m?.provider ?? '').trim()

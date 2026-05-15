@@ -9,6 +9,7 @@ import type {
 } from '@agentclientprotocol/sdk'
 import { RequestError } from '@agentclientprotocol/sdk'
 import { maybeAuthRequiredError } from './auth-required.js'
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
@@ -159,7 +160,7 @@ export class SessionManager {
       state = null
     }
 
-    const sessionId = typeof state?.sessionId === 'string' ? state.sessionId : crypto.randomUUID()
+    const sessionId = typeof state?.sessionId === 'string' ? state.sessionId : randomUUID()
     const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
 
     if (sessionFile) {
@@ -169,7 +170,7 @@ export class SessionManager {
     debugLog('session_manager.create', {
       sessionId,
       cwd: params.cwd,
-      sessionFile,
+      sessionFile
     })
 
     const session = new PiAcpSession({
@@ -269,7 +270,7 @@ export class PiAcpSession {
     debugLog('session.construct', {
       sessionId: this.sessionId,
       cwd: this.cwd,
-      fileCommands: this.fileCommands.length,
+      fileCommands: this.fileCommands.length
     })
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
@@ -313,7 +314,7 @@ export class PiAcpSession {
       imageCount: images.length,
       pendingTurn: Boolean(this.pendingTurn),
       queueDepth: this.turnQueue.length,
-      inAgentLoop: this.inAgentLoop,
+      inAgentLoop: this.inAgentLoop
     })
 
     // Keep a prompt-path fallback because some clients may ignore the best-effort
@@ -333,7 +334,7 @@ export class PiAcpSession {
           sessionId: this.sessionId,
           queueDepth: this.turnQueue.length,
           inAgentLoop: this.inAgentLoop,
-          message: expandedMessage,
+          message: expandedMessage
         })
 
         // Best-effort: notify client that a prompt was queued.
@@ -396,7 +397,7 @@ export class PiAcpSession {
       status: (update as any).status,
       toolCallId: (update as any).toolCallId,
       meta: (update as any)._meta,
-      content: (update as any).content,
+      content: (update as any).content
     })
 
     // Serialize update delivery.
@@ -412,14 +413,14 @@ export class PiAcpSession {
           sessionId: this.sessionId,
           update: update.sessionUpdate,
           status: (update as any).status,
-          toolCallId: (update as any).toolCallId,
+          toolCallId: (update as any).toolCallId
         })
       })
       .catch(error => {
         debugLog('session.emit.failed', {
           sessionId: this.sessionId,
           update: update.sessionUpdate,
-          error: String((error as Error)?.message ?? error),
+          error: String((error as Error)?.message ?? error)
         })
         // Ignore notification errors (client may have gone away). We still want
         // prompt completion.
@@ -437,7 +438,7 @@ export class PiAcpSession {
       pendingTurn: Boolean(this.pendingTurn),
       queueDepth: this.turnQueue.length,
       inAgentLoop: this.inAgentLoop,
-      cancelRequested: this.cancelRequested,
+      cancelRequested: this.cancelRequested
     })
 
     this.cancelRequested = false
@@ -448,7 +449,7 @@ export class PiAcpSession {
     debugLog('session.startTurn.pending_set', {
       sessionId: this.sessionId,
       queueDepth: this.turnQueue.length,
-      inAgentLoop: this.inAgentLoop,
+      inAgentLoop: this.inAgentLoop
     })
 
     // Publish queue depth (0 because we're starting the turn now).
@@ -463,7 +464,7 @@ export class PiAcpSession {
     debugLog('session.startTurn.proc_prompt.call', {
       sessionId: this.sessionId,
       message: t.message,
-      imageCount: t.images.length,
+      imageCount: t.images.length
     })
 
     this.proc
@@ -472,7 +473,7 @@ export class PiAcpSession {
         debugLog('session.startTurn.proc_prompt.resolved', {
           sessionId: this.sessionId,
           pendingTurn: Boolean(this.pendingTurn),
-          inAgentLoop: this.inAgentLoop,
+          inAgentLoop: this.inAgentLoop
         })
       })
       .catch(err => {
@@ -481,39 +482,39 @@ export class PiAcpSession {
           pendingTurn: Boolean(this.pendingTurn),
           inAgentLoop: this.inAgentLoop,
           cancelRequested: this.cancelRequested,
-          error: String((err as Error)?.message ?? err),
+          error: String((err as Error)?.message ?? err)
         })
         // If the subprocess errors before we get an `agent_end`, treat as error unless cancelled.
         // Also ensure we flush any already-enqueued updates first.
         void this.flushEmits().finally(() => {
-        // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
-        const authErr = maybeAuthRequiredError(err)
-        if (authErr) {
-          this.pendingTurn?.reject(authErr)
-        } else {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
-          this.pendingTurn?.resolve(reason)
-        }
+          // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
+          const authErr = maybeAuthRequiredError(err)
+          if (authErr) {
+            this.pendingTurn?.reject(authErr)
+          } else {
+            const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
+            this.pendingTurn?.resolve(reason)
+          }
 
-        debugLog('session.startTurn.proc_prompt.reject_resolve', {
-          sessionId: this.sessionId,
-          reason: this.cancelRequested ? 'cancelled' : 'error',
-          pendingTurn: Boolean(this.pendingTurn),
-          inAgentLoop: this.inAgentLoop,
+          debugLog('session.startTurn.proc_prompt.reject_resolve', {
+            sessionId: this.sessionId,
+            reason: this.cancelRequested ? 'cancelled' : 'error',
+            pendingTurn: Boolean(this.pendingTurn),
+            inAgentLoop: this.inAgentLoop
+          })
+
+          this.pendingTurn = null
+          this.inAgentLoop = false
+
+          // If the prompt failed, do not automatically proceed—pi may be unhealthy.
+          // But we still clear the queueDepth metadata.
+          this.emit({
+            sessionUpdate: 'session_info_update',
+            _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } }
+          })
         })
-
-        this.pendingTurn = null
-        this.inAgentLoop = false
-
-        // If the prompt failed, do not automatically proceed—pi may be unhealthy.
-        // But we still clear the queueDepth metadata.
-        this.emit({
-          sessionUpdate: 'session_info_update',
-          _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } }
-        })
+        void err
       })
-      void err
-    })
   }
 
   private handlePiEvent(ev: PiRpcEvent) {
@@ -529,7 +530,7 @@ export class PiAcpSession {
       assistantEventType: (ev as any).assistantMessageEvent?.type,
       toolCallId: (ev as any).toolCallId,
       toolName: (ev as any).toolName,
-      isError: (ev as any).isError,
+      isError: (ev as any).isError
     })
 
     switch (type) {
@@ -616,7 +617,7 @@ export class PiAcpSession {
       }
 
       case 'tool_execution_start': {
-        const toolCallId = String((ev as any).toolCallId ?? crypto.randomUUID())
+        const toolCallId = String((ev as any).toolCallId ?? randomUUID())
         const toolName = String((ev as any).toolName ?? 'tool')
         const args = (ev as any).args
         let line: number | undefined
@@ -779,7 +780,7 @@ export class PiAcpSession {
           sessionId: this.sessionId,
           pendingTurn: Boolean(this.pendingTurn),
           queueDepth: this.turnQueue.length,
-          inAgentLoop: this.inAgentLoop,
+          inAgentLoop: this.inAgentLoop
         })
         this.inAgentLoop = true
         break
@@ -797,7 +798,7 @@ export class PiAcpSession {
           pendingTurn: Boolean(this.pendingTurn),
           queueDepth: this.turnQueue.length,
           inAgentLoop: this.inAgentLoop,
-          cancelRequested: this.cancelRequested,
+          cancelRequested: this.cancelRequested
         })
 
         // Ensure all updates derived from pi events are delivered before we resolve
@@ -809,7 +810,7 @@ export class PiAcpSession {
             reason,
             pendingTurn: Boolean(this.pendingTurn),
             queueDepth: this.turnQueue.length,
-            inAgentLoop: this.inAgentLoop,
+            inAgentLoop: this.inAgentLoop
           })
           this.pendingTurn?.resolve(reason)
           this.pendingTurn = null

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import * as readline from 'node:readline'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
 
@@ -315,7 +316,7 @@ export class PiRpcProcess {
   }
 
   private request(cmd: PiRpcCommand): Promise<PiRpcResponse> {
-    const id = crypto.randomUUID()
+    const id = randomUUID()
     const withId = { ...cmd, id }
 
     const line = JSON.stringify(withId) + '\n'
