@@ -356,16 +356,27 @@ export class PiAcpAgent implements ACPAgent {
     // (Tests sometimes stub out `this.sessions`, so guard the call.)
     (this.sessions as any).closeAllExcept?.(session.sessionId);
 
+    const metadata = buildSessionMetadata({ state, models, sessionFile: state?.sessionFile });
+
     const response = {
       sessionId: session.sessionId,
       models,
       modes: thinking,
       _meta: {
         piAcp: {
+          ...metadata,
           startupInfo: preludeText || null,
         },
       },
     };
+
+    void this.conn.sessionUpdate({
+      sessionId: session.sessionId,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { piAcp: metadata },
+      },
+    });
 
     // Try to send it immediately after session/new returns; if the client ignores it,
     // it will still be emitted as the first chunk of the first prompt.
@@ -1115,11 +1126,14 @@ export class PiAcpAgent implements ACPAgent {
     const models = await getModelState(proc, params.cwd);
     const thinking = await getThinkingState(proc);
 
+    const metadata = buildSessionMetadata({ models, sessionFile });
+
     const response = {
       models,
       modes: thinking,
       _meta: {
         piAcp: {
+          ...metadata,
           startupInfo: null,
         },
       },
@@ -1130,6 +1144,14 @@ export class PiAcpAgent implements ACPAgent {
       messageCount: messages.length,
       hasModels: Boolean(models),
       currentModeId: thinking.currentModeId,
+    });
+
+    void this.conn.sessionUpdate({
+      sessionId: session.sessionId,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { piAcp: metadata },
+      },
     });
 
     // Advertise slash commands after the response so the client knows the session exists.
@@ -1225,6 +1247,24 @@ export class PiAcpAgent implements ACPAgent {
 
     return {};
   }
+}
+
+function buildSessionMetadata(opts: {
+  state?: any | null;
+  models?: { currentModelId?: string } | null;
+  sessionFile?: string | null;
+}): Record<string, unknown> {
+  const model = opts.state?.model;
+  const contextWindow = typeof model?.contextWindow === "number" ? model.contextWindow : undefined;
+
+  return Object.fromEntries(
+    Object.entries({
+      version: pkg.version ?? "0.0.0",
+      model: opts.models?.currentModelId,
+      contextWindow,
+      sessionFile: opts.sessionFile || undefined,
+    }).filter(([, value]) => value !== undefined),
+  );
 }
 
 function titleFromPrompt(message: string): string | null {
