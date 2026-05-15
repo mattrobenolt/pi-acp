@@ -22,6 +22,44 @@ export function toToolTitle(toolName: string, args: unknown): string {
       const pattern = typeof a?.pattern === "string" ? a.pattern : undefined;
       return pattern ? `grep ${pattern}` : "grep";
     }
+    case "ls": {
+      const path = typeof a?.path === "string" ? a.path : undefined;
+      return path ? `ls: ${path}` : "ls";
+    }
+    case "webfetch": {
+      const url = typeof a?.url === "string" ? a.url : undefined;
+      return url ? `fetch: ${url}` : "webfetch";
+    }
+    case "websearch": {
+      const query = typeof a?.query === "string" ? a.query : undefined;
+      return query ? `search web: ${query}` : "websearch";
+    }
+    case "mcp": {
+      const tool = typeof a?.tool === "string" ? a.tool : undefined;
+      const server = typeof a?.server === "string" ? a.server : undefined;
+      return tool ? `mcp: ${server ? `${server}/` : ""}${tool}` : "mcp";
+    }
+    case "subagent": {
+      const agent = typeof a?.agent === "string" ? a.agent : undefined;
+      return agent ? `subagent: ${agent}` : "subagent";
+    }
+    case "todo": {
+      const action = typeof a?.action === "string" ? a.action : undefined;
+      return action ? `todo: ${action}` : "todo";
+    }
+    case "term": {
+      const action = typeof a?.action === "string" ? a.action : undefined;
+      const name = typeof a?.name === "string" ? a.name : undefined;
+      return action ? `term: ${action}${name ? ` ${name}` : ""}` : "term";
+    }
+    case "memory_read":
+    case "memory_search":
+    case "memory_write":
+      return toolName.replace(/_/g, " ");
+    case "scratchpad": {
+      const action = typeof a?.action === "string" ? a.action : undefined;
+      return action ? `scratchpad: ${action}` : "scratchpad";
+    }
     case "write": {
       const path = typeof a?.path === "string" ? a.path : undefined;
       return path ? `write: ${path}` : "write";
@@ -46,7 +84,22 @@ export function toToolKind(toolName: string): ToolKind {
       return "execute";
     case "find":
     case "grep":
+    case "websearch":
       return "search";
+    case "ls":
+      return "read";
+    case "webfetch":
+      return "fetch";
+    case "term":
+      return "execute";
+    case "mcp":
+    case "subagent":
+    case "todo":
+    case "scratchpad":
+    case "memory_read":
+    case "memory_search":
+    case "memory_write":
+      return "other";
     default:
       return "other";
   }
@@ -58,7 +111,7 @@ export function toToolCallLocations(
   line?: number,
   toolName?: string,
 ): ToolCallLocation[] | undefined {
-  if (toolName === "find" || toolName === "grep") return undefined;
+  if (toolName === "find" || toolName === "grep" || toolName === "websearch") return undefined;
 
   const path =
     typeof (args as { path?: unknown } | null | undefined)?.path === "string"

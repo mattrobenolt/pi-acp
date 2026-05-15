@@ -62,3 +62,42 @@ test("PiAcpSession: renders find tools as search without file navigation", async
   assert.equal((start.update as any).title, "find *.json");
   assert.equal((start.update as any).locations, undefined);
 });
+
+test("PiAcpSession: renders web tools with search/fetch kinds", async () => {
+  const conn = new FakeAgentSideConnection();
+  const proc = new FakePiRpcProcess();
+
+  new PiAcpSession({
+    sessionId: "s1",
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: [],
+  });
+
+  proc.emit({
+    type: "tool_execution_start",
+    toolCallId: "search1",
+    toolName: "websearch",
+    args: { query: "agent client protocol" },
+  });
+  proc.emit({
+    type: "tool_execution_start",
+    toolCallId: "fetch1",
+    toolName: "webfetch",
+    args: { url: "https://agentclientprotocol.com" },
+  });
+
+  await new Promise((r) => setTimeout(r, 0));
+
+  const search = conn.updates.find((u) => (u.update as any).toolCallId === "search1");
+  assert.ok(search, "expected websearch tool call");
+  assert.equal((search.update as any).kind, "search");
+  assert.equal((search.update as any).title, "search web: agent client protocol");
+
+  const fetch = conn.updates.find((u) => (u.update as any).toolCallId === "fetch1");
+  assert.ok(fetch, "expected webfetch tool call");
+  assert.equal((fetch.update as any).kind, "fetch");
+  assert.equal((fetch.update as any).title, "fetch: https://agentclientprotocol.com");
+});
