@@ -4,6 +4,8 @@ import {
   type AgentSideConnection,
   type AuthenticateRequest,
   type CancelNotification,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
   type ListSessionsRequest,
@@ -118,10 +120,38 @@ export class PiAcpAgent implements ACPAgent {
 
   // Remember recent session cwd and use it as the default filter.
   private lastSessionCwd: string | null = null;
+  private readonly titledSessions = new Set<string>();
 
   constructor(conn: AgentSideConnection, _config?: unknown) {
     this.conn = conn;
     void _config;
+  }
+
+  private async maybeSetInitialTitle(
+    session: ReturnType<SessionManager["get"]>,
+    message: string,
+  ): Promise<void> {
+    if (this.titledSessions.has(session.sessionId)) return;
+
+    const title = titleFromPrompt(message);
+    if (!title) return;
+
+    this.titledSessions.add(session.sessionId);
+
+    try {
+      await session.proc.setSessionName(title);
+    } catch {
+      // Best-effort only; ACP clients can still use the session_info_update title.
+    }
+
+    await this.conn.sessionUpdate({
+      sessionId: session.sessionId,
+      update: {
+        sessionUpdate: "session_info_update",
+        title,
+        updatedAt: new Date().toISOString(),
+      },
+    });
   }
 
   private cleanupFailedNewSession(sessionId: string, state?: any | null): void {
@@ -172,6 +202,7 @@ export class PiAcpAgent implements ACPAgent {
         sessionCapabilities: {
           // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
           // Enables a native session picker in clients that support it.
+          close: {},
           list: {},
         },
       },
@@ -369,6 +400,8 @@ export class PiAcpAgent implements ACPAgent {
 
     const { message, images } = promptToPiMessage(params.prompt);
 
+    await this.maybeSetInitialTitle(session, message);
+
     debugLog("agent.prompt.normalized", {
       sessionId: params.sessionId,
       message,
@@ -479,6 +512,7 @@ export class PiAcpAgent implements ACPAgent {
           return { stopReason: "end_turn" };
         }
 
+        this.titledSessions.add(session.sessionId);
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
@@ -854,6 +888,14 @@ export class PiAcpAgent implements ACPAgent {
     await session.cancel();
   }
 
+  async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+    const session = this.sessions.get(params.sessionId);
+    await session.cancel();
+    this.sessions.close(params.sessionId);
+    this.titledSessions.delete(params.sessionId);
+    return {};
+  }
+
   async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
     // ACP: filter by cwd if provided.
     // Zed currently sends `{}` (no cwd), so we default to the last session cwd to
@@ -1150,6 +1192,15 @@ export class PiAcpAgent implements ACPAgent {
 
     return {};
   }
+}
+
+function titleFromPrompt(message: string): string | null {
+  const firstLine = message.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim();
+
+  if (!firstLine || firstLine.startsWith("/")) return null;
+
+  const max = 60;
+  return firstLine.length <= max ? firstLine : `${firstLine.slice(0, max - 1).trimEnd()}…`;
 }
 
 function isThinkingLevel(x: string): x is ThinkingLevel {
