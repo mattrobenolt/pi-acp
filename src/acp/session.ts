@@ -33,6 +33,7 @@ type SessionCreateParams = {
   conn: AgentSideConnection;
   fileCommands?: import("./slash-commands.js").FileSlashCommand[];
   piCommand?: string;
+  agentDir?: string;
 };
 
 export type StopReason = "end_turn" | "cancelled" | "error";
@@ -159,6 +160,7 @@ export class SessionManager {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
         piCommand: params.piCommand,
+        agentDir: params.agentDir,
       });
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {
@@ -184,6 +186,7 @@ export class SessionManager {
     debugLog("session_manager.create", {
       sessionId,
       cwd: params.cwd,
+      agentDir: params.agentDir,
       sessionFile,
     });
 

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 function isObject(x: unknown): x is Record<string, unknown> {
   return Boolean(x) && typeof x === "object" && !Array.isArray(x);
@@ -44,10 +44,42 @@ export function getMergedSettings(cwd: string): Record<string, unknown> {
   return deepMerge(global, project);
 }
 
+function baseAgentDir(): string {
+  return resolve(process.env.PI_PROFILE_BASE_DIR ?? join(homedir(), ".pi", "agent"));
+}
+
+function profileDir(name: string, baseDir = baseAgentDir()): string {
+  return join(dirname(baseDir), `${basename(baseDir)}-${name}`);
+}
+
+function configuredDefaultProfile(baseDir = baseAgentDir()): string | null {
+  try {
+    const configPath = join(dirname(baseDir), "pi-profile.json");
+    if (!existsSync(configPath)) return null;
+
+    const data = JSON.parse(readFileSync(configPath, "utf-8")) as unknown;
+    if (!isObject(data) || typeof data.defaultProfile !== "string") return null;
+
+    const name = data.defaultProfile.trim();
+    return /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
+  if (process.env.PI_CODING_AGENT_DIR) return resolve(process.env.PI_CODING_AGENT_DIR);
+
+  const baseDir = baseAgentDir();
+  const requestedProfile = process.env.PI_ACP_PROFILE?.trim();
+  if (requestedProfile === "base") return baseDir;
+
+  const profileName =
+    requestedProfile && requestedProfile !== "default"
+      ? requestedProfile
+      : configuredDefaultProfile(baseDir);
+
+  return profileName ? profileDir(profileName, baseDir) : baseDir;
 }
 
 /**

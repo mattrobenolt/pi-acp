@@ -28,6 +28,8 @@ class FakeSessions {
 
 test("PiAcpAgent: prompt auto-restores a stored session", async () => {
   const realSpawn = PiRpcProcess.spawn;
+  const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = "/tmp/agent";
   const sessions = new FakeSessions();
   const proc = {
     async setSessionName(_name: string) {},
@@ -67,10 +69,13 @@ test("PiAcpAgent: prompt auto-restores a stored session", async () => {
         cwd: "/tmp/project",
         sessionPath: "/tmp/session.jsonl",
         piCommand: undefined,
+        agentDir: process.env.PI_CODING_AGENT_DIR,
       },
     ]);
     assert.equal(sessions.restored.message, "continue");
   } finally {
     (PiRpcProcess as any).spawn = realSpawn;
+    if (prevAgentDir == null) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
   }
 });

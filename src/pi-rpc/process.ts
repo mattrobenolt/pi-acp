@@ -84,6 +84,8 @@ type SpawnParams = {
   cwd: string;
   /** Optional override for `pi` executable name/path */
   piCommand?: string;
+  /** Effective PI_CODING_AGENT_DIR for the child pi process. */
+  agentDir?: string;
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string;
 };
@@ -155,7 +157,10 @@ export class PiRpcProcess {
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: "pipe",
-      env: process.env,
+      env: {
+        ...process.env,
+        ...(params.agentDir ? { PI_CODING_AGENT_DIR: params.agentDir } : {}),
+      },
       shell: shouldUseShellForPiCommand(cmd),
     });
 

@@ -251,6 +251,7 @@ export class PiAcpAgent implements ACPAgent {
       cwd: stored.cwd,
       sessionPath: stored.sessionFile,
       piCommand: process.env.PI_ACP_PI_COMMAND,
+      agentDir: getAgentDir(),
     });
 
     const session = this.sessions.getOrCreate(sessionId, {
@@ -260,6 +261,7 @@ export class PiAcpAgent implements ACPAgent {
       proc,
       fileCommands: loadSlashCommands(stored.cwd),
       piCommand: process.env.PI_ACP_PI_COMMAND,
+      agentDir: getAgentDir(),
     });
 
     this.lastSessionCwd = stored.cwd;
@@ -452,6 +454,7 @@ export class PiAcpAgent implements ACPAgent {
       conn: this.conn,
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
+      agentDir: getAgentDir(),
     });
 
     // Fetch state + models once (parallel) to reduce startup latency.
@@ -646,6 +649,7 @@ export class PiAcpAgent implements ACPAgent {
       sessionId: session.sessionId,
       cwd: params.cwd,
       hasStartupInfo: Boolean(preludeText),
+      metadata,
     });
 
     return response;
@@ -1238,6 +1242,7 @@ export class PiAcpAgent implements ACPAgent {
       cwd: params.cwd,
       sessionPath: sessionFile,
       piCommand: process.env.PI_ACP_PI_COMMAND,
+      agentDir: getAgentDir(),
     });
 
     const fileCommands = loadSlashCommands(params.cwd);
@@ -1321,6 +1326,7 @@ export class PiAcpAgent implements ACPAgent {
       cwd: params.cwd,
       sessionPath: forkFile,
       piCommand: process.env.PI_ACP_PI_COMMAND,
+      agentDir: getAgentDir(),
     });
     const fileCommands = loadSlashCommands(params.cwd);
     const session = this.sessions.getOrCreate(sessionId, {
@@ -1413,6 +1419,7 @@ export class PiAcpAgent implements ACPAgent {
         cwd: params.cwd,
         sessionPath: sessionFile,
         piCommand: process.env.PI_ACP_PI_COMMAND,
+        agentDir: getAgentDir(),
       });
     } catch (e: any) {
       if (e?.name === "PiRpcSpawnError") {
@@ -1550,6 +1557,7 @@ export class PiAcpAgent implements ACPAgent {
       messageCount: messages.length,
       hasModels: Boolean(models),
       currentModeId: thinking.currentModeId,
+      metadata,
     });
 
     void this.conn.sessionUpdate({
@@ -1977,6 +1985,9 @@ function buildSessionMetadata(opts: {
       version: pkg.version ?? "0.0.0",
       model: opts.models?.currentModelId,
       contextWindow,
+      agentDir: getAgentDir(),
+      piCodingAgentDir: getAgentDir(),
+      inheritedPiCodingAgentDir: process.env.PI_CODING_AGENT_DIR || undefined,
       sessionFile: opts.sessionFile || undefined,
       additionalDirectories: opts.additionalDirectories?.length
         ? opts.additionalDirectories
@@ -2277,6 +2288,12 @@ function buildStartupInfo(opts: {
     for (const item of cleaned) md.push(`- ${item}`);
     md.push("");
   };
+
+  addSection("Pi environment", [
+    `Agent dir: ${getAgentDir()}`,
+    `PI_CODING_AGENT_DIR: ${getAgentDir()}`,
+    `Inherited PI_CODING_AGENT_DIR: ${process.env.PI_CODING_AGENT_DIR || "<unset>"}`,
+  ]);
 
   // Context
   const contextItems: string[] = [];

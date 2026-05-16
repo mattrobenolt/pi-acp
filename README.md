@@ -115,6 +115,7 @@ For live TypeScript execution during development:
 ## Environment variables
 
 - `PI_ACP_PI_COMMAND=/path/to/pi` overrides the `pi` executable used by the adapter.
+- `PI_ACP_PROFILE=default|base|<name>` overrides profile resolution. If unset, pi-acp uses `PI_CODING_AGENT_DIR` when present, otherwise the configured `pi-profile` default from `~/.pi/pi-profile.json`, otherwise `~/.pi/agent`.
 - `PI_ACP_DIR=/path/to/state` overrides adapter state storage. Default: `~/.pi/pi-acp`.
 - `PI_ACP_DEBUG_LOG=/tmp/pi-acp.jsonl` writes JSONL debug events for ACP/Zed diagnostics.
 - `PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` advertises ACP `promptCapabilities.embeddedContext`. If a client sends embedded `resource` blocks anyway, `pi-acp` converts them into plain-text prompt context.

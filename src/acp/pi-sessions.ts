@@ -7,8 +7,8 @@ import {
   closeSync,
   existsSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
+import { getAgentDir } from "./pi-settings.js";
 
 export type PiSessionListItem = {
   sessionId: string;
@@ -20,14 +20,6 @@ export type PiSessionListItem = {
 
 const DEFAULT_TAIL_BYTES = 256 * 1024;
 const DEFAULT_HEAD_BYTES = 64 * 1024;
-
-function getPiAgentDir(): string {
-  // pi supports overriding config dir via PI_CODING_AGENT_DIR.
-  // See pi README.
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-}
 
 function readSessionDirFromSettings(agentDir: string): string | null {
   const settingsPath = join(agentDir, "settings.json");
@@ -47,7 +39,7 @@ function readSessionDirFromSettings(agentDir: string): string | null {
 }
 
 export function getPiSessionsDir(): string {
-  const agentDir = getPiAgentDir();
+  const agentDir = getAgentDir();
   return readSessionDirFromSettings(agentDir) ?? join(agentDir, "sessions");
 }
 
